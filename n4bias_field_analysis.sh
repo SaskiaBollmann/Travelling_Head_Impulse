@@ -2,7 +2,7 @@
 #SBATCH --job-name=ants_n4       
 #SBATCH --output=ants_n4.%j.out  
 #SBATCH --error=ants_n4.%j.err   
-#SBATCH --time=1:00:00              
+#SBATCH --time=4:00:00              
 #SBATCH --partition=owners        
 #SBATCH --cpus-per-task=4         
 #SBATCH --mem=32GB
@@ -67,14 +67,14 @@ run_n4() {
         return
     fi
 
-    echo "Processing N4 (Unmasked, B-Spline 50) for: ${RAW_ID}_${basename}"
-    
+echo "Processing N4 (Unmasked, B-Spline 150) for: ${RAW_ID}_${basename}"
+
     N4BiasFieldCorrection \
         -d 3 \
         -i "$img_path" \
         -s 2 \
         -c [50x50x50x50,0.000001] \
-        -b [50] \
+        -b [150] \
         -o ["$corrected_out","$bias_out"] \
         -v 1
         
@@ -104,20 +104,30 @@ fi
 if [ ${#INV2_FILES[@]} -gt 0 ]; then
     echo "Found ${#INV2_FILES[@]} INV2_ND file(s). Starting processing..."
     for img in "${INV2_FILES[@]}"; do
+        # Ignore any files that contain 'facemask'
+        if [[ "$img" == *facemask* ]]; then
+            echo "Skipping facemask image: $(basename "$img")"
+            continue
+        fi
         run_n4 "$img" "INV2_ND"
     done
 else
     echo "Warning: No INV2_ND files found."
 fi
 
-# Loop over all found UNI_ND files
+# Loop over all found UNI-DEN_ND files
 if [ ${#UNI_FILES[@]} -gt 0 ]; then
-    echo "Found ${#UNI_FILES[@]} UNI_ND file(s). Starting processing..."
+    echo "Found ${#UNI_FILES[@]} UNI-DEN_ND file(s). Starting processing..."
     for img in "${UNI_FILES[@]}"; do
-        run_n4 "$img" "UNI_ND"
+        # Ignore any files that contain 'facemask'
+        if [[ "$img" == *facemask* ]]; then
+            echo "Skipping facemask image: $(basename "$img")"
+            continue
+        fi
+        run_n4 "$img" "UNI-DEN_ND"
     done
 else
-    echo "Warning: No UNI_ND files found."
+    echo "Warning: No UNI-DEN_ND files found."
 fi
 
 echo "=================================================="

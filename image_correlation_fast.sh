@@ -1,5 +1,8 @@
 #!/bin/bash
 
+ml ants
+ml fsl
+
 # Check if an identifier was provided
 if [ -z "$1" ]; then
     echo "Usage: $0 <file_identifier>"
@@ -8,26 +11,28 @@ if [ -z "$1" ]; then
 fi
 
 IDENTIFIER="$1"
-BASE_DIR="/oak/stanford/groups/polimeni/saskia/data/THS_2026/orig"
 
-# Defined chronological sessions (including all 7 listed)
+# Define your input and output base paths
+BASE_DIR="/oak/stanford/groups/polimeni/saskia/data/THS_2026/orig"
+DERIV_DIR="/oak/stanford/groups/polimeni/saskia/data/THS_2026/derivatives/coregistration"
+
+# Create a specific output directory named after the scan ID
+OUT_DIR="${DERIV_DIR}/${IDENTIFIER}"
+mkdir -p "$OUT_DIR"
+
+# Defined chronological sessions
 SESSION_DIRS=(
     "260529_THS_ses01"
     "260601_THS_ses02"
     "260602_THS_ses03"
-    "260602_THS_ses04"
     "260611_THS_ses05"
     "260618_THS_ses06"
     "260618_THS_ses07"
 )
 
-# Regex breakdown:
-# - Matches exactly the identifier
-# - Followed by an underscore and one or more digits: _[0-9]+
-# - Ends exactly with .nii or .nii.gz: \.nii(\.gz)?$
+# Regex to match the exact file
 REGEX_PATTERN="${IDENTIFIER}_[0-9]+\.nii(\.gz)?$"
 
-# Arrays to hold the successfully located files and their parent sessions
 FOUND_FILES=()
 VALID_SESSIONS=()
 
@@ -41,7 +46,6 @@ for ses in "${SESSION_DIRS[@]}"; do
         continue
     fi
     
-    # Use find and grep to locate the exact file matching our regex
     TARGET_FILE=$(find "$search_path" -maxdepth 1 -type f | grep -E "$REGEX_PATTERN" | head -n 1)
     
     if [[ -n "$TARGET_FILE" && -f "$TARGET_FILE" ]]; then
@@ -63,9 +67,9 @@ fi
 
 echo ""
 echo "Proceeding with $NUM_VALID sessions."
+echo "All outputs will be saved to: $OUT_DIR"
 echo "------------------------------------------------------"
 
-# Define the local transformation parameters
 TRANSFORM_FLAGS=("r" "a")
 TRANSFORM_NAMES=("Rigid" "Affine")
 NUM_TRANSFORMS=${#TRANSFORM_FLAGS[@]}
@@ -73,9 +77,9 @@ NUM_TRANSFORMS=${#TRANSFORM_FLAGS[@]}
 for (( t=0; t<$NUM_TRANSFORMS; t++ )); do
     FLAG="${TRANSFORM_FLAGS[$t]}"
     NAME="${TRANSFORM_NAMES[$t]}"
-    MATRIX_FILE="correlation_matrix_${NAME}_${IDENTIFIER}.txt"
     
-    # Clear out any existing matrix file for this run
+    # Route the matrix file to the new output directory
+    MATRIX_FILE="${OUT_DIR}/correlation_matrix_${NAME}_${IDENTIFIER}.txt"
     > "$MATRIX_FILE"
     
     echo ""
@@ -90,11 +94,11 @@ for (( t=0; t<$NUM_TRANSFORMS; t++ )); do
             MOVING="${FOUND_FILES[$i]}"
             FIXED="${FOUND_FILES[$j]}"
             
-            # Use session names for output prefixes instead of array indices
             MOV_SES="${VALID_SESSIONS[$i]}"
             FIX_SES="${VALID_SESSIONS[$j]}"
             
-            OUT_PREFIX="reg_${NAME}_mov_${MOV_SES}_to_fix_${FIX_SES}_"
+            # Route the ANTs outputs to the new directory
+            OUT_PREFIX="${OUT_DIR}/reg_${NAME}_mov_${MOV_SES}_to_fix_${FIX_SES}_"
             
             if [ $i -eq $j ]; then
                 echo "  [${NAME}] Self-registering ${MOV_SES}..."
@@ -124,6 +128,7 @@ for (( t=0; t<$NUM_TRANSFORMS; t++ )); do
     echo ""
     echo "=== Final Matrix: $NAME ($IDENTIFIER) ==="
     echo "Row/Col Order: ${VALID_SESSIONS[*]}"
+    echo "Saved in: $OUT_DIR"
     echo "------------------------------------------------------"
     column -t "$MATRIX_FILE"
 done
