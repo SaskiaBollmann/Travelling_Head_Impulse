@@ -20,3 +20,8 @@ fsl_6.0.7.18_20250928
 
 `do_defacing`
 
+## Tar Dicoms
+
+`for dir in *; do tar -c -v -f $dir.tar.gz $dir/*; done`
+
+
