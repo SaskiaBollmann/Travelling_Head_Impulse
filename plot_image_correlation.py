@@ -3,10 +3,64 @@
 import sys
 import os
 import glob
-import numpy as np
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
+import subprocess
+
+
+def import_plotting_stack():
+    global np
+    global plt
+
+    try:
+        import numpy as np
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        return
+    except ModuleNotFoundError as error:
+        missing_module = error.name
+
+    if os.environ.get("PLOT_IMAGE_CORRELATION_REEXECED") != "1":
+        clean_env = os.environ.copy()
+        clean_env.pop("PYTHONHOME", None)
+        clean_env.pop("PYTHONPATH", None)
+        clean_env["MPLBACKEND"] = "Agg"
+        clean_env["PLOT_IMAGE_CORRELATION_REEXECED"] = "1"
+
+        candidate_pythons = [
+            sys.executable,
+            "/home/users/sasbo/miniconda3/envs/THS_env/bin/python3",
+            "/home/users/sasbo/miniconda3/bin/python3",
+        ]
+        import_check = "import numpy; import matplotlib; matplotlib.use('Agg'); import matplotlib.pyplot"
+
+        seen = set()
+        for python in candidate_pythons:
+            if not python or python in seen or not os.path.exists(python):
+                continue
+            seen.add(python)
+
+            check = subprocess.run(
+                [python, "-c", import_check],
+                env=clean_env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            if check.returncode == 0:
+                script_path = os.path.abspath(__file__)
+                os.execve(python, [python, script_path, *sys.argv[1:]], clean_env)
+
+    print(f"Error: Python cannot import required plotting module {missing_module!r}.", file=sys.stderr)
+    print("Try this in a fresh shell before plotting:", file=sys.stderr)
+    print("  unset PYTHONPATH PYTHONHOME", file=sys.stderr)
+    print("  conda activate THS_env", file=sys.stderr)
+    print("  python3 -c 'import numpy; import matplotlib'", file=sys.stderr)
+    print("", file=sys.stderr)
+    print("If that still fails, repair the environment with:", file=sys.stderr)
+    print("  conda install -n THS_env -c conda-forge numpy matplotlib", file=sys.stderr)
+    sys.exit(1)
+
+
+import_plotting_stack()
 
 
 def session_site_and_number(num_sessions):
