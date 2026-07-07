@@ -1,134 +1,212 @@
 #!/bin/bash
+if [ -z "$BASH_VERSION" ]; then
+    exec /bin/bash "$0" "$@"
+fi
 
-ml ants
-ml fsl
 
-# Check if an identifier was provided
-if [ -z "$1" ]; then
-    echo "Usage: $0 <file_identifier>"
-    echo "Example: $0 mp2rage_0p7iso_PS_UNI-DEN"
+# Load required software modules
+if ! command -v ml >/dev/null 2>&1; then
+    echo "Error: The 'ml' module command is not available. Run this script in an environment with modules initialized." >&2
     exit 1
 fi
 
-IDENTIFIER="$1"
+ml fsl || { echo "Error: Failed to load FSL module." >&2; exit 1; }
+ml ants || { echo "Error: Failed to load ANTs module." >&2; exit 1; }
+ml freesurfer || { echo "Error: Failed to load FreeSurfer module." >&2; exit 1; }
 
-# Define your input and output base paths
+check_programs() {
+    local missing=()
+    local program
+
+    for program in "$@"; do
+        if ! command -v "$program" >/dev/null 2>&1; then
+            missing+=("$program")
+        fi
+    done
+
+    if [ "${#missing[@]}" -gt 0 ]; then
+        echo "Error: Required programs not found after module loading: ${missing[*]}" >&2
+        exit 1
+    fi
+}
+
+# 1. Parse Command Line Arguments
+MASK=false
+while [[ "$#" -gt 0 ]]; do
+    case $1 in
+        -r|--reg-id) REG_ID="$2"; shift ;;
+        -R|--reg-suffix) REG_SUFFIX="$2"; shift ;;
+        -c|--corr-id) CORR_ID="$2"; shift ;;
+        -C|--corr-suffix) CORR_SUFFIX="$2"; shift ;;
+        -m|--mask) MASK=true ;;
+        *) echo "Unknown parameter passed: $1"; exit 1 ;;
+    esac
+    shift
+done
+
+if [ -z "$REG_ID" ]; then
+    echo "Error: Registration ID (-r) is required."
+    echo "Usage: ./run_dynamic_linear.sh -r <reg_id> [-R reg_suffix] [-c corr_id] [-C corr_suffix] [-m]"
+    exit 1
+fi
+
+if [ -z "$CORR_ID" ]; then CORR_ID="$REG_ID"; fi
+if [ -z "$CORR_SUFFIX" ]; then CORR_SUFFIX="$REG_SUFFIX"; fi
+
+REQUIRED_PROGRAMS=(antsRegistrationSyNQuick.sh antsApplyTransforms fslcc fslmaths fslstats awk find grep head)
+[ "$MASK" = true ] && REQUIRED_PROGRAMS+=(mri_synthstrip)
+check_programs "${REQUIRED_PROGRAMS[@]}"
+
+# 2. Build Output IDs and Paths
+OUT_ID="${CORR_ID}"
+[ -n "$CORR_SUFFIX" ] && OUT_ID="${OUT_ID}_${CORR_SUFFIX}"
+[ "$MASK" = true ] && OUT_ID="${OUT_ID}_masked"
+
 BASE_DIR="/oak/stanford/groups/polimeni/saskia/data/THS_2026/orig"
 DERIV_DIR="/oak/stanford/groups/polimeni/saskia/data/THS_2026/derivatives/coregistration"
-
-# Create a specific output directory named after the scan ID
-OUT_DIR="${DERIV_DIR}/${IDENTIFIER}"
+OUT_DIR="${DERIV_DIR}/${OUT_ID}"
 mkdir -p "$OUT_DIR"
 
-# Defined chronological sessions
-SESSION_DIRS=(
-    "260529_THS_ses01"
-    "260601_THS_ses02"
-    "260602_THS_ses03"
-    "260611_THS_ses05"
-    "260618_THS_ses06"
-    "260618_THS_ses07"
-)
+SESSION_DIRS=("260529_THS_ses01" "260601_THS_ses02" "260602_THS_ses03" "260602_THS_ses04" "260611_THS_ses05" "260618_THS_ses06" "260618_THS_ses07")
 
-# Regex to match the exact file
-REGEX_PATTERN="${IDENTIFIER}_[0-9]+\.nii(\.gz)?$"
+build_regex() {
+    local id=$1 suffix=$2
+    if [ -n "$suffix" ]; then echo "${id}_[0-9]+_${suffix}\.nii(\.gz)?$"
+    else echo "${id}_[0-9]+\.nii(\.gz)?$"; fi
+}
+REG_REGEX=$(build_regex "$REG_ID" "$REG_SUFFIX")
+CORR_REGEX=$(build_regex "$CORR_ID" "$CORR_SUFFIX")
 
-FOUND_FILES=()
-VALID_SESSIONS=()
+VALID_SES=()
+REG_FILES=()
+CORR_FILES=()
 
-echo "Searching for '$IDENTIFIER' in $BASE_DIR..."
+echo "Validating sessions for Registration ($REG_ID) and Correlation/RMSE ($CORR_ID)..."
 
 for ses in "${SESSION_DIRS[@]}"; do
     search_path="${BASE_DIR}/${ses}"
+    [ ! -d "$search_path" ] && continue
     
-    if [ ! -d "$search_path" ]; then
-        echo "  [Skipping] Directory not found: $ses"
-        continue
-    fi
+    R_FILE=$(find "$search_path" -maxdepth 1 -type f 2>/dev/null | grep -E "$REG_REGEX" | head -n 1)
+    C_FILE=$(find "$search_path" -maxdepth 1 -type f 2>/dev/null | grep -E "$CORR_REGEX" | head -n 1)
     
-    TARGET_FILE=$(find "$search_path" -maxdepth 1 -type f | grep -E "$REGEX_PATTERN" | head -n 1)
-    
-    if [[ -n "$TARGET_FILE" && -f "$TARGET_FILE" ]]; then
-        FOUND_FILES+=("$TARGET_FILE")
-        VALID_SESSIONS+=("$ses")
-        echo "  [Found] $ses -> $(basename "$TARGET_FILE")"
+    if [[ -n "$R_FILE" && -f "$R_FILE" && -n "$C_FILE" && -f "$C_FILE" ]]; then
+        VALID_SES+=("$ses")
+        REG_FILES+=("$R_FILE")
+        CORR_FILES+=("$C_FILE")
+        echo "  [Ready] $ses"
     else
-        echo "  [Skipping] No matching file found in $ses"
+        echo "  [Skipping] Missing required files in $ses"
     fi
 done
 
-NUM_VALID=${#FOUND_FILES[@]}
-
+NUM_VALID=${#VALID_SES[@]}
 if [ "$NUM_VALID" -lt 2 ]; then
-    echo ""
-    echo "Error: Found less than 2 valid sessions ($NUM_VALID). Cannot compute a correlation matrix."
+    echo "Error: Found less than 2 valid sessions."
     exit 1
 fi
 
-echo ""
-echo "Proceeding with $NUM_VALID sessions."
-echo "All outputs will be saved to: $OUT_DIR"
-echo "------------------------------------------------------"
+echo "Validated $NUM_VALID sessions."
+echo "Output directory: $OUT_DIR"
+if [ "$MASK" = true ]; then
+    echo "Masking: enabled. SynthStrip masks will be generated from each fixed registration image."
+else
+    echo "Masking: disabled."
+fi
 
 TRANSFORM_FLAGS=("r" "a")
 TRANSFORM_NAMES=("Rigid" "Affine")
-NUM_TRANSFORMS=${#TRANSFORM_FLAGS[@]}
+TOTAL_PAIRS=$((NUM_VALID * NUM_VALID))
 
-for (( t=0; t<$NUM_TRANSFORMS; t++ )); do
+for (( t=0; t<${#TRANSFORM_FLAGS[@]}; t++ )); do
     FLAG="${TRANSFORM_FLAGS[$t]}"
     NAME="${TRANSFORM_NAMES[$t]}"
     
-    # Route the matrix file to the new output directory
-    MATRIX_FILE="${OUT_DIR}/correlation_matrix_${NAME}_${IDENTIFIER}.txt"
-    > "$MATRIX_FILE"
+    CORR_MATRIX_FILE="${OUT_DIR}/correlation_matrix_${NAME}_${OUT_ID}.txt"
+    RMSE_MATRIX_FILE="${OUT_DIR}/rmse_matrix_${NAME}_${OUT_ID}.txt"
+    > "$CORR_MATRIX_FILE"
+    > "$RMSE_MATRIX_FILE"
     
-    echo ""
-    echo "========================================="
-    echo " Executing $NAME Transformations (-t $FLAG)"
-    echo "========================================="
-    
+    echo "Executing $NAME Pipeline with transform flag $FLAG across $TOTAL_PAIRS session pairs..."
     for (( i=0; i<$NUM_VALID; i++ )); do
-        ROW_OUTPUT=""
+        ROW_CORR=""
+        ROW_RMSE=""
+        echo "  Matrix row $((i + 1))/$NUM_VALID: moving session ${VALID_SES[$i]}"
         
         for (( j=0; j<$NUM_VALID; j++ )); do
-            MOVING="${FOUND_FILES[$i]}"
-            FIXED="${FOUND_FILES[$j]}"
+            MOV_SES="${VALID_SES[$i]}"
+            FIX_SES="${VALID_SES[$j]}"
             
-            MOV_SES="${VALID_SESSIONS[$i]}"
-            FIX_SES="${VALID_SESSIONS[$j]}"
-            
-            # Route the ANTs outputs to the new directory
             OUT_PREFIX="${OUT_DIR}/reg_${NAME}_mov_${MOV_SES}_to_fix_${FIX_SES}_"
+            PAIR_NUM=$((i * NUM_VALID + j + 1))
+
+            echo "    [$NAME $PAIR_NUM/$TOTAL_PAIRS] Registering moving ${MOV_SES} to fixed ${FIX_SES}"
+            echo "      Registration images: ${REG_FILES[$i]##*/} -> ${REG_FILES[$j]##*/}"
+            echo "      Correlation/RMSE images: ${CORR_FILES[$i]##*/} -> ${CORR_FILES[$j]##*/}"
             
-            if [ $i -eq $j ]; then
-                echo "  [${NAME}] Self-registering ${MOV_SES}..."
-            else
-                echo "  [${NAME}] Registering ${MOV_SES} to ${FIX_SES}..."
+            # 1. Registration 
+            echo "      Running ANTs registration..."
+            antsRegistrationSyNQuick.sh -d 3 -f "${REG_FILES[$j]}" -m "${REG_FILES[$i]}" -o "$OUT_PREFIX" -t "$FLAG" >/dev/null 2>&1
+            
+            # 2. Masking with FreeSurfer (mri_synthstrip)
+            MASK_CMD=""
+            if [ "$MASK" = true ]; then
+                MASK_FILE="${OUT_DIR}/mask_${FIX_SES}.nii.gz"
+                if [ ! -f "$MASK_FILE" ]; then
+                    echo "      Creating mask for fixed session ${FIX_SES} with mri_synthstrip..."
+                    mri_synthstrip -i "${REG_FILES[$j]}" -m "$MASK_FILE" >/dev/null 2>&1
+                else
+                    echo "      Reusing existing mask for fixed session ${FIX_SES}."
+                fi
+                MASK_CMD="-m $MASK_FILE"
             fi
             
-            # 1. Register
-            antsRegistrationSyNQuick.sh -d 3 -f "$FIXED" -m "$MOVING" -o "$OUT_PREFIX" -t "$FLAG"
+            # 3. Apply Transform
+            WARPED_CORR="${OUT_PREFIX}CORR_Warped.nii.gz"
+            TRANSFORM_MAT="${OUT_PREFIX}0GenericAffine.mat"
             
-            REGISTERED_IMG="${OUT_PREFIX}Warped.nii.gz"
-            
-            # 2. Compute correlation
-            if [ -f "$REGISTERED_IMG" ]; then
-                CORR=$(fslcc "$FIXED" "$REGISTERED_IMG" | awk '{print $3}')
+            if [ -f "$TRANSFORM_MAT" ]; then
+                echo "      Applying transform to correlation/RMSE image..."
+                antsApplyTransforms -d 3 -i "${CORR_FILES[$i]}" -r "${CORR_FILES[$j]}" -n Linear -t "$TRANSFORM_MAT" -o "$WARPED_CORR" >/dev/null 2>&1
+                
+                # 4a. Compute Correlation
+                echo "      Computing FSL correlation..."
+                CORR=$(fslcc $MASK_CMD "${CORR_FILES[$j]}" "$WARPED_CORR" | awk '{print $3}')
+                [ -z "$CORR" ] && CORR="NaN"
+                
+                # 4b. Compute RMSE
+                echo "      Computing RMSE..."
+                TMP_SQR="${OUT_DIR}/tmp_sqr_${MOV_SES}_to_${FIX_SES}.nii.gz"
+                
+                if [ "$MASK" = true ]; then
+                    fslmaths "${CORR_FILES[$j]}" -sub "$WARPED_CORR" -sqr -mas "$MASK_FILE" "$TMP_SQR"
+                    # Use lowercase -m to get the mean of all voxels inside the mask (including true zeros)
+                    MSE=$(fslstats "$TMP_SQR" -k "$MASK_FILE" -m) 
+                else
+                    fslmaths "${CORR_FILES[$j]}" -sub "$WARPED_CORR" -sqr "$TMP_SQR"
+                    MSE=$(fslstats "$TMP_SQR" -m)
+                fi
+                
+                if [[ -n "$MSE" && "$MSE" != "NaN" ]]; then
+                    # Use awk to calculate the square root
+                    RMSE=$(awk -v mse="$MSE" 'BEGIN {printf "%.4f", sqrt(mse)}')
+                else
+                    RMSE="NaN"
+                fi
+                rm "$TMP_SQR" 2>/dev/null
+                echo "      Result: correlation=$CORR rmse=$RMSE"
+                
             else
-                CORR="ERR"
+                echo "      Warning: transform matrix not found; writing NaN for this pair."
+                CORR="NaN"
+                RMSE="NaN"
             fi
             
-            ROW_OUTPUT="$ROW_OUTPUT $CORR"
+            ROW_CORR="$ROW_CORR $CORR"
+            ROW_RMSE="$ROW_RMSE $RMSE"
         done
-        
-        # Save the row
-        echo "$ROW_OUTPUT" >> "$MATRIX_FILE"
+        echo "$ROW_CORR" >> "$CORR_MATRIX_FILE"
+        echo "$ROW_RMSE" >> "$RMSE_MATRIX_FILE"
     done
-    
-    echo ""
-    echo "=== Final Matrix: $NAME ($IDENTIFIER) ==="
-    echo "Row/Col Order: ${VALID_SESSIONS[*]}"
-    echo "Saved in: $OUT_DIR"
-    echo "------------------------------------------------------"
-    column -t "$MATRIX_FILE"
 done
+echo "Linear matrices completed: Correlation and RMSE."
