@@ -63,6 +63,17 @@ fi
 if [ -z "$CORR_ID" ]; then CORR_ID="$REG_ID"; fi
 if [ -z "$CORR_SUFFIX" ]; then CORR_SUFFIX="$REG_SUFFIX"; fi
 
+strip_leading_underscores() {
+    local value=$1
+    while [[ "$value" == _* ]]; do
+        value="${value#_}"
+    done
+    echo "$value"
+}
+
+[ -n "$REG_SUFFIX" ] && REG_SUFFIX=$(strip_leading_underscores "$REG_SUFFIX")
+[ -n "$CORR_SUFFIX" ] && CORR_SUFFIX=$(strip_leading_underscores "$CORR_SUFFIX")
+
 case "$TRANSFORM_MODE" in
     r|rigid|Rigid|RIGID)
         TRANSFORM_FLAGS=("r")
@@ -140,10 +151,22 @@ build_mp2rage_uniden_regex() {
 
 find_matching_file() {
     local search_path=$1 id=$2 suffix=$3 ses=$4 fallback_regex=$5
-    local regex match
+    local regex match no_nd_id
 
     if requested_mp2rage_uniden "$id" "$suffix"; then
         regex=$(build_mp2rage_uniden_regex "$ses")
+        match=$(find "$search_path" -maxdepth 1 -type f 2>/dev/null | sort | grep -E "$regex" | head -n 1)
+
+        if [ -n "$match" ]; then
+            echo "$match"
+            return
+        fi
+    fi
+
+    # Session 4 has matching images without the ND token for some acquisitions.
+    if [[ "$ses" == *"_ses04" && "$id" == *"_ND"* ]]; then
+        no_nd_id="${id/_ND/}"
+        regex=$(build_regex "$no_nd_id" "$suffix")
         match=$(find "$search_path" -maxdepth 1 -type f 2>/dev/null | sort | grep -E "$regex" | head -n 1)
 
         if [ -n "$match" ]; then
