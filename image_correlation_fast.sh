@@ -53,7 +53,7 @@ fi
 if [ -z "$CORR_ID" ]; then CORR_ID="$REG_ID"; fi
 if [ -z "$CORR_SUFFIX" ]; then CORR_SUFFIX="$REG_SUFFIX"; fi
 
-REQUIRED_PROGRAMS=(antsRegistrationSyNQuick.sh antsApplyTransforms fslcc fslmaths fslstats awk find grep head)
+REQUIRED_PROGRAMS=(antsRegistrationSyNQuick.sh antsApplyTransforms fslcc fslmaths fslstats awk find grep head sort)
 [ "$MASK" = true ] && REQUIRED_PROGRAMS+=(mri_synthstrip)
 check_programs "${REQUIRED_PROGRAMS[@]}"
 
@@ -74,6 +74,49 @@ build_regex() {
     if [ -n "$suffix" ]; then echo "${id}_[0-9]+_${suffix}\.nii(\.gz)?$"
     else echo "${id}_[0-9]+\.nii(\.gz)?$"; fi
 }
+
+requested_mp2rage_uniden() {
+    local id=$1 suffix=$2
+    local request="${id}"
+    [ -n "$suffix" ] && request="${request}_${suffix}"
+
+    [[ "$request" == *mp2rage* && ( "$request" == *UNI-DEN* || "$request" == *UNI_DEN* ) ]]
+}
+
+build_mp2rage_uniden_regex() {
+    local ses=$1
+    local flag_regex="_(TrueForm|TF)"
+
+    # Session 1 is the TrueForm acquisition, but the filename lacks that flag.
+    if [[ "$ses" == *"_ses01" ]]; then
+        flag_regex="(_(TrueForm|TF))?"
+    fi
+
+    # Session 4 uses the Berkeley naming convention and does not include _ND.
+    if [[ "$ses" == *"_ses04" ]]; then
+        echo "(mp2rage_0p7iso${flag_regex}_UNI[-_]DEN|t1_mp2rage_sag_p3_0p7mm${flag_regex}_UNI[-_]DEN)_[0-9]+\.nii(\.gz)?$"
+    else
+        echo "mp2rage_0p7iso${flag_regex}_UNI[-_]DEN_ND_[0-9]+\.nii(\.gz)?$"
+    fi
+}
+
+find_matching_file() {
+    local search_path=$1 id=$2 suffix=$3 ses=$4 fallback_regex=$5
+    local regex match
+
+    if requested_mp2rage_uniden "$id" "$suffix"; then
+        regex=$(build_mp2rage_uniden_regex "$ses")
+        match=$(find "$search_path" -maxdepth 1 -type f 2>/dev/null | sort | grep -E "$regex" | head -n 1)
+
+        if [ -n "$match" ]; then
+            echo "$match"
+            return
+        fi
+    fi
+
+    find "$search_path" -maxdepth 1 -type f 2>/dev/null | sort | grep -E "$fallback_regex" | head -n 1
+}
+
 REG_REGEX=$(build_regex "$REG_ID" "$REG_SUFFIX")
 CORR_REGEX=$(build_regex "$CORR_ID" "$CORR_SUFFIX")
 
@@ -87,8 +130,8 @@ for ses in "${SESSION_DIRS[@]}"; do
     search_path="${BASE_DIR}/${ses}"
     [ ! -d "$search_path" ] && continue
     
-    R_FILE=$(find "$search_path" -maxdepth 1 -type f 2>/dev/null | grep -E "$REG_REGEX" | head -n 1)
-    C_FILE=$(find "$search_path" -maxdepth 1 -type f 2>/dev/null | grep -E "$CORR_REGEX" | head -n 1)
+    R_FILE=$(find_matching_file "$search_path" "$REG_ID" "$REG_SUFFIX" "$ses" "$REG_REGEX")
+    C_FILE=$(find_matching_file "$search_path" "$CORR_ID" "$CORR_SUFFIX" "$ses" "$CORR_REGEX")
     
     if [[ -n "$R_FILE" && -f "$R_FILE" && -n "$C_FILE" && -f "$C_FILE" ]]; then
         VALID_SES+=("$ses")
