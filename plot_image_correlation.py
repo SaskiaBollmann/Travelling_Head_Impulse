@@ -10,6 +10,9 @@ def import_plotting_stack():
     global np
     global plt
 
+    import_error = None
+    missing_module = "numpy/matplotlib"
+
     try:
         import numpy as np
         import matplotlib
@@ -17,7 +20,10 @@ def import_plotting_stack():
         import matplotlib.pyplot as plt
         return
     except ModuleNotFoundError as error:
+        import_error = error
         missing_module = error.name
+    except ImportError as error:
+        import_error = error
 
     if os.environ.get("PLOT_IMAGE_CORRELATION_REEXECED") != "1":
         clean_env = os.environ.copy()
@@ -50,6 +56,8 @@ def import_plotting_stack():
                 os.execve(python, [python, script_path, *sys.argv[1:]], clean_env)
 
     print(f"Error: Python cannot import required plotting module {missing_module!r}.", file=sys.stderr)
+    if import_error is not None:
+        print(f"Original import error: {import_error}", file=sys.stderr)
     print("Try this in a fresh shell before plotting:", file=sys.stderr)
     print("  unset PYTHONPATH PYTHONHOME", file=sys.stderr)
     print("  conda activate THS_env", file=sys.stderr)

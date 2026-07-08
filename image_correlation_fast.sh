@@ -83,7 +83,7 @@ case "$TRANSFORM_MODE" in
         ;;
 esac
 
-REQUIRED_PROGRAMS=(antsRegistrationSyNQuick.sh antsApplyTransforms fslcc fslmaths fslstats awk find grep head sort)
+REQUIRED_PROGRAMS=(antsRegistrationSyNQuick.sh antsApplyTransforms fslcc fslmaths fslstats awk find grep head sort env)
 [ "$MASK" = true ] && REQUIRED_PROGRAMS+=(mri_synthstrip)
 check_programs "${REQUIRED_PROGRAMS[@]}"
 if [ ! -f "$PLOT_SCRIPT" ]; then
@@ -291,4 +291,4 @@ for (( t=0; t<${#TRANSFORM_FLAGS[@]}; t++ )); do
 done
 echo "Linear matrices completed: Correlation and RMSE."
 echo "Generating plots..."
-"$PLOT_PYTHON" "$PLOT_SCRIPT" "$OUT_ID"
+env -u PYTHONPATH -u PYTHONHOME MPLBACKEND=Agg "$PLOT_PYTHON" "$PLOT_SCRIPT" "$OUT_ID"
