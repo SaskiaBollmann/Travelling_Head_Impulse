@@ -2,6 +2,9 @@
 if [ -z "$BASH_VERSION" ]; then
     exec /bin/bash "$0" "$@"
 fi
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLOT_SCRIPT="${SCRIPT_DIR}/plot_image_correlation.py"
+PLOT_PYTHON="/home/users/sasbo/miniconda3/envs/THS_env/bin/python3"
 
 
 # Load required software modules
@@ -31,7 +34,12 @@ check_programs() {
 }
 
 # 1. Parse Command Line Arguments
+print_usage() {
+    echo "Usage: ./image_correlation_fast.sh -r <reg_id> [-R reg_suffix] [-c corr_id] [-C corr_suffix] [-m] [-t rigid|affine|both]"
+}
+
 MASK=false
+TRANSFORM_MODE="both"
 while [[ "$#" -gt 0 ]]; do
     case $1 in
         -r|--reg-id) REG_ID="$2"; shift ;;
@@ -39,23 +47,53 @@ while [[ "$#" -gt 0 ]]; do
         -c|--corr-id) CORR_ID="$2"; shift ;;
         -C|--corr-suffix) CORR_SUFFIX="$2"; shift ;;
         -m|--mask) MASK=true ;;
-        *) echo "Unknown parameter passed: $1"; exit 1 ;;
+        -t|--transform) TRANSFORM_MODE="$2"; shift ;;
+        -h|--help) print_usage; exit 0 ;;
+        *) echo "Unknown parameter passed: $1"; print_usage; exit 1 ;;
     esac
     shift
 done
 
 if [ -z "$REG_ID" ]; then
     echo "Error: Registration ID (-r) is required."
-    echo "Usage: ./run_dynamic_linear.sh -r <reg_id> [-R reg_suffix] [-c corr_id] [-C corr_suffix] [-m]"
+    print_usage
     exit 1
 fi
 
 if [ -z "$CORR_ID" ]; then CORR_ID="$REG_ID"; fi
 if [ -z "$CORR_SUFFIX" ]; then CORR_SUFFIX="$REG_SUFFIX"; fi
 
+case "$TRANSFORM_MODE" in
+    r|rigid|Rigid|RIGID)
+        TRANSFORM_FLAGS=("r")
+        TRANSFORM_NAMES=("Rigid")
+        ;;
+    a|affine|Affine|AFFINE)
+        TRANSFORM_FLAGS=("a")
+        TRANSFORM_NAMES=("Affine")
+        ;;
+    both|all|Both|BOTH|All|ALL)
+        TRANSFORM_FLAGS=("r" "a")
+        TRANSFORM_NAMES=("Rigid" "Affine")
+        ;;
+    *)
+        echo "Error: Transform mode must be one of: rigid, affine, both."
+        print_usage
+        exit 1
+        ;;
+esac
+
 REQUIRED_PROGRAMS=(antsRegistrationSyNQuick.sh antsApplyTransforms fslcc fslmaths fslstats awk find grep head sort)
 [ "$MASK" = true ] && REQUIRED_PROGRAMS+=(mri_synthstrip)
 check_programs "${REQUIRED_PROGRAMS[@]}"
+if [ ! -f "$PLOT_SCRIPT" ]; then
+    echo "Error: Plotting script not found: $PLOT_SCRIPT" >&2
+    exit 1
+fi
+if [ ! -x "$PLOT_PYTHON" ]; then
+    echo "Error: Plotting Python not found or not executable: $PLOT_PYTHON" >&2
+    exit 1
+fi
 
 # 2. Build Output IDs and Paths
 OUT_ID="${CORR_ID}"
@@ -156,9 +194,8 @@ if [ "$MASK" = true ]; then
 else
     echo "Masking: disabled."
 fi
+echo "Transform mode: $TRANSFORM_MODE."
 
-TRANSFORM_FLAGS=("r" "a")
-TRANSFORM_NAMES=("Rigid" "Affine")
 TOTAL_PAIRS=$((NUM_VALID * NUM_VALID))
 
 for (( t=0; t<${#TRANSFORM_FLAGS[@]}; t++ )); do
@@ -253,3 +290,5 @@ for (( t=0; t<${#TRANSFORM_FLAGS[@]}; t++ )); do
     done
 done
 echo "Linear matrices completed: Correlation and RMSE."
+echo "Generating plots..."
+"$PLOT_PYTHON" "$PLOT_SCRIPT" "$OUT_ID"
