@@ -210,36 +210,48 @@ find_matching_file() {
 REG_REGEX=$(build_regex "$REG_ID" "$REG_SUFFIX")
 CORR_REGEX=$(build_regex "$CORR_ID" "$CORR_SUFFIX")
 
-VALID_SES=()
 REG_FILES=()
 CORR_FILES=()
+SESSION_AVAILABLE=()
+NUM_VALID=0
+NUM_SES=${#SESSION_DIRS[@]}
 
 echo "Validating sessions for Registration ($REG_ID) and Correlation/RMSE ($CORR_ID)..."
 
-for ses in "${SESSION_DIRS[@]}"; do
+for (( ses_idx=0; ses_idx<NUM_SES; ses_idx++ )); do
+    ses="${SESSION_DIRS[$ses_idx]}"
     search_path="${BASE_DIR}/${ses}"
-    [ ! -d "$search_path" ] && continue
-    
-    R_FILE=$(find_matching_file "$search_path" "$REG_ID" "$REG_SUFFIX" "$ses" "$REG_REGEX")
-    C_FILE=$(find_matching_file "$search_path" "$CORR_ID" "$CORR_SUFFIX" "$ses" "$CORR_REGEX")
-    
+    R_FILE=""
+    C_FILE=""
+
+    if [ -d "$search_path" ]; then
+        R_FILE=$(find_matching_file "$search_path" "$REG_ID" "$REG_SUFFIX" "$ses" "$REG_REGEX")
+        C_FILE=$(find_matching_file "$search_path" "$CORR_ID" "$CORR_SUFFIX" "$ses" "$CORR_REGEX")
+    fi
+
     if [[ -n "$R_FILE" && -f "$R_FILE" && -n "$C_FILE" && -f "$C_FILE" ]]; then
-        VALID_SES+=("$ses")
-        REG_FILES+=("$R_FILE")
-        CORR_FILES+=("$C_FILE")
+        REG_FILES[$ses_idx]="$R_FILE"
+        CORR_FILES[$ses_idx]="$C_FILE"
+        SESSION_AVAILABLE[$ses_idx]=true
+        NUM_VALID=$((NUM_VALID + 1))
         echo "  [Ready] $ses"
     else
-        echo "  [Skipping] Missing required files in $ses"
+        REG_FILES[$ses_idx]=""
+        CORR_FILES[$ses_idx]=""
+        SESSION_AVAILABLE[$ses_idx]=false
+        echo "  [Missing] $ses (matrix row and column will be NaN)"
     fi
 done
 
-NUM_VALID=${#VALID_SES[@]}
 if [ "$NUM_VALID" -lt 2 ]; then
     echo "Error: Found less than 2 valid sessions."
     exit 1
 fi
 
-echo "Validated $NUM_VALID sessions."
+echo "Validated $NUM_VALID of $NUM_SES sessions."
+if [ "$NUM_VALID" -lt "$NUM_SES" ]; then
+    echo "Missing sessions will remain in the 7-session matrices as NaN rows and columns."
+fi
 echo "Output directory: $OUT_DIR"
 if [ "$MASK" = true ]; then
     echo "Masking: enabled. SynthStrip masks will be generated from each fixed registration image."
@@ -253,7 +265,13 @@ else
     echo "Resume mode: enabled. Existing pair metric files and transform outputs will be reused."
 fi
 
-TOTAL_PAIRS=$((NUM_VALID * NUM_VALID))
+TOTAL_PAIRS=$((NUM_SES * NUM_SES))
+
+# Older runs numbered temp metrics after dropping missing sessions. Use
+# session-based names whenever a session is missing to avoid reusing a compact
+# matrix entry for the wrong row or column.
+USE_SESSION_TEMP_NAMES=false
+[ "$NUM_VALID" -lt "$NUM_SES" ] && USE_SESSION_TEMP_NAMES=true
 
 if [ "$FORCE" = true ] && [ "$MASK" = true ]; then
     echo "Clearing existing masks for complete re-run..."
@@ -275,23 +293,40 @@ for (( t=0; t<${#TRANSFORM_FLAGS[@]}; t++ )); do
     fi
 
     echo "Executing $NAME Pipeline with transform flag $FLAG across $TOTAL_PAIRS session pairs..."
-    for (( i=0; i<$NUM_VALID; i++ )); do
+    for (( i=0; i<NUM_SES; i++ )); do
         ROW_CORR=""
         ROW_RMSE=""
-        echo "  Matrix row $((i + 1))/$NUM_VALID: moving session ${VALID_SES[$i]}"
-        
-        for (( j=0; j<$NUM_VALID; j++ )); do
-            MOV_SES="${VALID_SES[$i]}"
-            FIX_SES="${VALID_SES[$j]}"
-            
+        MOV_SES="${SESSION_DIRS[$i]}"
+        echo "  Matrix row $((i + 1))/$NUM_SES: moving session $MOV_SES"
+
+        for (( j=0; j<NUM_SES; j++ )); do
+            FIX_SES="${SESSION_DIRS[$j]}"
+
             OUT_PREFIX="${OUT_DIR}/reg_${NAME}_mov_${MOV_SES}_to_fix_${FIX_SES}_"
             WARPED_CORR="${OUT_PREFIX}CORR_Warped.nii.gz"
             TRANSFORM_MAT="${OUT_PREFIX}0GenericAffine.mat"
-            TEMP_CORR="${OUT_DIR}/tmp_corr_${NAME}_${i}_${j}.txt"
-            TEMP_RMSE="${OUT_DIR}/tmp_rmse_${NAME}_${i}_${j}.txt"
-            PAIR_NUM=$((i * NUM_VALID + j + 1))
+            if [ "$USE_SESSION_TEMP_NAMES" = true ]; then
+                TEMP_CORR="${OUT_DIR}/tmp_corr_${NAME}_${MOV_SES}_to_${FIX_SES}.txt"
+                TEMP_RMSE="${OUT_DIR}/tmp_rmse_${NAME}_${MOV_SES}_to_${FIX_SES}.txt"
+            else
+                TEMP_CORR="${OUT_DIR}/tmp_corr_${NAME}_${i}_${j}.txt"
+                TEMP_RMSE="${OUT_DIR}/tmp_rmse_${NAME}_${i}_${j}.txt"
+            fi
+            PAIR_NUM=$((i * NUM_SES + j + 1))
 
             echo "    [$NAME $PAIR_NUM/$TOTAL_PAIRS] Moving ${MOV_SES} to fixed ${FIX_SES}"
+
+            if [[ "${SESSION_AVAILABLE[$i]}" != true || "${SESSION_AVAILABLE[$j]}" != true ]]; then
+                echo "      Missing acquisition; writing NaN for this matrix pair."
+                CORR="NaN"
+                RMSE="NaN"
+                echo "$CORR" > "$TEMP_CORR"
+                echo "$RMSE" > "$TEMP_RMSE"
+                ROW_CORR="$ROW_CORR $CORR"
+                ROW_RMSE="$ROW_RMSE $RMSE"
+                continue
+            fi
+
             echo "      Registration images: ${REG_FILES[$i]##*/} -> ${REG_FILES[$j]##*/}"
             echo "      Correlation/RMSE images: ${CORR_FILES[$i]##*/} -> ${CORR_FILES[$j]##*/}"
 

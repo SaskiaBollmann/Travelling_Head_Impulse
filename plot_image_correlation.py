@@ -71,34 +71,36 @@ def import_plotting_stack():
 import_plotting_stack()
 
 
-def session_site_and_number(num_sessions):
-    if num_sessions == 6:
-        session_numbers = [1, 2, 3, 5, 6, 7]
+def session_site_and_number(num_sessions, includes_berkeley):
+    if includes_berkeley:
+        if num_sessions != 7:
+            raise ValueError(
+                "Plots with Berkeley require a 7-session matrix "
+                "(3 Stanford, 1 Berkeley, 3 Magdeburg)."
+            )
+        sites = ["Stanford"] * 3 + ["Berkeley"] + ["Magdeburg"] * 3
     else:
-        session_numbers = list(range(1, num_sessions + 1))
+        if num_sessions != 6:
+            raise ValueError(
+                "Plots without Berkeley require a 6-session matrix "
+                "(3 Stanford, 3 Magdeburg)."
+            )
+        sites = ["Stanford"] * 3 + ["Magdeburg"] * 3
 
-    session_info = []
-    for ses_num in session_numbers:
-        if ses_num <= 3:
-            site = "Stanford"
-        elif ses_num == 4:
-            site = "Berkeley"
-        else:
-            site = "Magdeburg"
-        session_info.append((site, ses_num))
-
-    return session_info
+    return list(zip(sites, range(1, num_sessions + 1)))
 
 
-def session_labels(num_sessions):
+def session_labels(num_sessions, includes_berkeley):
     return [
         f"{site}\nSes {ses_num:02d}"
-        for site, ses_num in session_site_and_number(num_sessions)
+        for site, ses_num in session_site_and_number(
+            num_sessions, includes_berkeley
+        )
     ]
 
 
-def group_dividers(num_sessions):
-    session_info = session_site_and_number(num_sessions)
+def group_dividers(num_sessions, includes_berkeley):
+    session_info = session_site_and_number(num_sessions, includes_berkeley)
     return [
         idx + 0.5
         for idx in range(num_sessions - 1)
@@ -123,7 +125,7 @@ def metric_from_filename(filename, folder_name):
             "transform": transform_name,
             "fmt": ".2f",
             "cmap": "viridis",
-            "vmin": None,
+            "vmin": 0.75,
             "vmax": 1.0,
         }
 
@@ -149,10 +151,7 @@ def color_limits(matrix, metric):
         return metric["vmin"], metric["vmax"]
 
     if metric["name"] == "CC":
-        # Ignore perfect self-correlations when choosing the lower color bound.
-        off_diag_vals = valid_vals[valid_vals < 0.999]
-        vmin = np.nanmin(off_diag_vals) if off_diag_vals.size > 0 else 0.95
-        return vmin, metric["vmax"]
+        return metric["vmin"], metric["vmax"]
 
     return metric["vmin"], np.nanmax(valid_vals)
 
@@ -176,23 +175,17 @@ def text_color(value, vmin, vmax):
     return "white" if scaled < 0.45 else "black"
 
 
-def plot_matrix(file_path, folder_name):
-    filename = os.path.basename(file_path)
-    metric = metric_from_filename(filename, folder_name)
-
-    if metric is None:
-        print(f"  [Skipping] Unrecognized matrix filename: {filename}")
-        return False
-
-    try:
-        matrix = load_matrix(file_path)
-    except Exception as e:
-        print(f"  [Skipping] Failed to load {filename}: {e}")
-        return False
-
+def save_matrix_plot(
+    matrix,
+    metric,
+    folder_name,
+    output_filename,
+    includes_berkeley,
+    vmin,
+    vmax,
+):
     num_sessions = matrix.shape[0]
-    labels = session_labels(num_sessions)
-    vmin, vmax = safe_color_limits(*color_limits(matrix, metric))
+    labels = session_labels(num_sessions, includes_berkeley)
 
     cmap = plt.get_cmap(metric["cmap"]).copy()
     cmap.set_bad(color="lightgray")
@@ -214,7 +207,7 @@ def plot_matrix(file_path, folder_name):
     ax.grid(which="minor", color="black", linestyle="-", linewidth=0.5)
     ax.tick_params(which="minor", bottom=False, left=False)
 
-    for divider in group_dividers(num_sessions):
+    for divider in group_dividers(num_sessions, includes_berkeley):
         ax.axhline(divider, color="white", linewidth=3)
         ax.axvline(divider, color="white", linewidth=3)
 
@@ -227,15 +220,75 @@ def plot_matrix(file_path, folder_name):
 
     title = metric["title"]
     transform = metric["transform"]
-    ax.set_title(f"{title}: {transform}\n({folder_name})", pad=15)
+    berkeley_label = "with Berkeley" if includes_berkeley else "without Berkeley"
+    ax.set_title(
+        f"{title}: {transform}\n({folder_name}; {berkeley_label})",
+        pad=15,
+    )
     fig.tight_layout()
 
-    output_filename = file_path.replace(".txt", ".png")
     fig.savefig(output_filename, dpi=300)
     plt.close(fig)
 
     print(f"  -> Saved {os.path.basename(output_filename)}")
-    return True
+
+
+def plot_matrix(file_path, folder_name):
+    filename = os.path.basename(file_path)
+    metric = metric_from_filename(filename, folder_name)
+
+    if metric is None:
+        print(f"  [Skipping] Unrecognized matrix filename: {filename}")
+        return 0
+
+    try:
+        matrix = load_matrix(file_path)
+    except Exception as e:
+        print(f"  [Skipping] Failed to load {filename}: {e}")
+        return 0
+
+    if matrix.shape[0] != matrix.shape[1]:
+        print(f"  [Skipping] Matrix is not square: {filename} ({matrix.shape})")
+        return 0
+
+    if matrix.shape[0] not in (6, 7):
+        print(
+            f"  [Skipping] Expected 6 or 7 sessions, found "
+            f"{matrix.shape[0]}: {filename}"
+        )
+        return 0
+
+    # Use identical color limits for both variants so their colors can be
+    # compared directly.
+    vmin, vmax = safe_color_limits(*color_limits(matrix, metric))
+    output_stem, _ = os.path.splitext(file_path)
+
+    if matrix.shape[0] == 7:
+        save_matrix_plot(
+            matrix, metric, folder_name,
+            f"{output_stem}_with_Berkeley.png",
+            includes_berkeley=True, vmin=vmin, vmax=vmax,
+        )
+
+        # Berkeley is session 04, at zero-based row/column index 3.
+        without_berkeley = np.delete(np.delete(matrix, 3, axis=0), 3, axis=1)
+        save_matrix_plot(
+            without_berkeley, metric, folder_name,
+            f"{output_stem}_without_Berkeley.png",
+            includes_berkeley=False, vmin=vmin, vmax=vmax,
+        )
+        return 2
+
+    print(
+        f"  [Info] {filename} already has 6 sessions; "
+        "only the without-Berkeley plot can be generated."
+    )
+    save_matrix_plot(
+        matrix, metric, folder_name,
+        f"{output_stem}_without_Berkeley.png",
+        includes_berkeley=False, vmin=vmin, vmax=vmax,
+    )
+    return 1
 
 
 def main():
@@ -265,8 +318,7 @@ def main():
 
     num_plotted = 0
     for file_path in sorted(matrix_files):
-        if plot_matrix(file_path, folder_name):
-            num_plotted += 1
+        num_plotted += plot_matrix(file_path, folder_name)
 
     print(f"Generated {num_plotted} plot(s).")
 
