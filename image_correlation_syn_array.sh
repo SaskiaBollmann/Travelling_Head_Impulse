@@ -11,6 +11,7 @@
 if [ -z "$BASH_VERSION" ]; then
     exec /bin/bash "$0" "$@"
 fi
+ORIGINAL_ARGS=("$@")
 
 check_programs() {
     local missing=()
@@ -118,6 +119,21 @@ strip_leading_underscores() {
 [ -n "$REG_SUFFIX" ] && REG_SUFFIX=$(strip_leading_underscores "$REG_SUFFIX")
 [ -n "$CORR_SUFFIX" ] && CORR_SUFFIX=$(strip_leading_underscores "$CORR_SUFFIX")
 
+dataset_id() {
+    local id=$1 suffix=$2
+    if [ -n "$suffix" ]; then
+        echo "${id}_${suffix}"
+    else
+        echo "$id"
+    fi
+}
+
+REG_DATASET_ID=$(dataset_id "$REG_ID" "$REG_SUFFIX")
+CORR_DATASET_ID=$(dataset_id "$CORR_ID" "$CORR_SUFFIX")
+printf -v RUN_COMMAND '%q ' "$0" "${ORIGINAL_ARGS[@]}"
+RUN_COMMAND=${RUN_COMMAND% }
+GENERATED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
 # Load required software modules after parsing so --help works in any shell.
 if ! command -v ml >/dev/null 2>&1; then
     echo "Error: The 'ml' module command is not available. Run this script in an environment with modules initialized." >&2
@@ -133,8 +149,11 @@ REQUIRED_PROGRAMS=(antsRegistrationSyNQuick.sh antsApplyTransforms fslcc fslmath
 check_programs "${REQUIRED_PROGRAMS[@]}"
 
 # 2. Build output IDs and paths.
-OUT_ID="${CORR_ID}"
-[ -n "$CORR_SUFFIX" ] && OUT_ID="${OUT_ID}_${CORR_SUFFIX}"
+if [ "$REG_DATASET_ID" = "$CORR_DATASET_ID" ]; then
+    OUT_ID="$CORR_DATASET_ID"
+else
+    OUT_ID="reg-${REG_DATASET_ID}__corr-${CORR_DATASET_ID}"
+fi
 [ "$MASK" = true ] && OUT_ID="${OUT_ID}_masked"
 
 BASE_DIR="/oak/stanford/groups/polimeni/saskia/data/THS_2026/orig"
@@ -278,9 +297,6 @@ TEMP_RMSE="${OUT_DIR}/tmp_rmse_SyN_${i}_${j}.txt"
 if [ "$FORCE" = true ]; then
     echo "Force re-run requested for ${MOV_SES} -> ${FIX_SES}; removing existing pair outputs."
     rm -f "${OUT_PREFIX}"* "$TEMP_CORR" "$TEMP_RMSE"
-elif [[ -s "$TEMP_CORR" && -s "$TEMP_RMSE" ]]; then
-    echo "Completed SyN metrics already exist for ${MOV_SES} -> ${FIX_SES}. Skipping."
-    exit 0
 fi
 
 # 5. Dynamically locate the registration and correlation/RMSE images.
@@ -288,6 +304,19 @@ MOVING_REG=$(find_matching_file "${BASE_DIR}/${MOV_SES}" "$REG_ID" "$REG_SUFFIX"
 FIXED_REG=$(find_matching_file "${BASE_DIR}/${FIX_SES}" "$REG_ID" "$REG_SUFFIX" "$FIX_SES" "$REG_REGEX")
 MOVING_CORR=$(find_matching_file "${BASE_DIR}/${MOV_SES}" "$CORR_ID" "$CORR_SUFFIX" "$MOV_SES" "$CORR_REGEX")
 FIXED_CORR=$(find_matching_file "${BASE_DIR}/${FIX_SES}" "$CORR_ID" "$CORR_SUFFIX" "$FIX_SES" "$CORR_REGEX")
+PAIR_PROVENANCE="${OUT_DIR}/provenance_SyN_${i}_${j}.tsv"
+PAIR_STATUS="ready"
+if [[ -z "$MOVING_REG" || -z "$FIXED_REG" || -z "$MOVING_CORR" || -z "$FIXED_CORR" ]]; then
+    PAIR_STATUS="missing"
+fi
+printf "script\tgenerated_at\tcommand\ttransform\tmasked\tregistration_id\tregistration_suffix\tcorrelation_id\tcorrelation_suffix\toutput_id\tjob_id\ttask_id\tmoving_session\tfixed_session\tstatus\tmoving_registration_file\tfixed_registration_file\tmoving_correlation_file\tfixed_correlation_file\n" > "$PAIR_PROVENANCE"
+PAIR_ROW=("$0" "$GENERATED_AT" "$RUN_COMMAND" "SyN" "$MASK" "$REG_ID" "${REG_SUFFIX:-}" "$CORR_ID" "${CORR_SUFFIX:-}" "$OUT_ID" "${SLURM_JOB_ID:-}" "$TASK_ID" "$MOV_SES" "$FIX_SES" "$PAIR_STATUS" "$MOVING_REG" "$FIXED_REG" "$MOVING_CORR" "$FIXED_CORR")
+printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" "${PAIR_ROW[@]}" >> "$PAIR_PROVENANCE"
+
+if [ "$FORCE" = false ] && [[ -s "$TEMP_CORR" && -s "$TEMP_RMSE" ]]; then
+    echo "Completed SyN metrics already exist for ${MOV_SES} -> ${FIX_SES}. Skipping."
+    exit 0
+fi
 
 # If any required file is missing, exit cleanly but write NaN placeholders.
 if [[ -z "$MOVING_REG" || -z "$FIXED_REG" || -z "$MOVING_CORR" || -z "$FIXED_CORR" ]]; then

@@ -1,10 +1,41 @@
 #!/bin/bash
+#SBATCH --job-name=image_corr_fast
+#SBATCH --time=24:00:00
+#SBATCH --partition=owners
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=32GB
+#SBATCH -o /oak/stanford/groups/polimeni/saskia/data/THS_2026/derivatives/coregistration/logs/image_corr_fast_%j.output
+#SBATCH -e /oak/stanford/groups/polimeni/saskia/data/THS_2026/derivatives/coregistration/logs/image_corr_fast_%j.error
+
 if [ -z "$BASH_VERSION" ]; then
     exec /bin/bash "$0" "$@"
 fi
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PLOT_SCRIPT="${SCRIPT_DIR}/plot_image_correlation.py"
+
+resolve_plot_script() {
+    local source_dir candidate
+    source_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+    for candidate in \
+        "${THI_SCRIPT_DIR:-}" \
+        "$source_dir" \
+        "${SLURM_SUBMIT_DIR:-}" \
+        "/home/users/sasbo/code/Travelling_Head_Impulse"; do
+        if [ -n "$candidate" ] &&
+           [ -f "${candidate}/plot_image_correlation.py" ]; then
+            printf '%s\n' "${candidate}/plot_image_correlation.py"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+PLOT_SCRIPT=$(resolve_plot_script) || {
+    echo "Error: Could not locate plot_image_correlation.py." >&2
+    exit 1
+}
 PLOT_PYTHON="/home/users/sasbo/miniconda3/envs/THS_env/bin/python3"
+ORIGINAL_ARGS=("$@")
 
 
 # Load required software modules
@@ -35,18 +66,20 @@ check_programs() {
 
 # 1. Parse Command Line Arguments
 print_usage() {
-    echo "Usage: ./image_correlation_fast.sh -r <reg_id> [-R reg_suffix] [-c corr_id] [-C corr_suffix] [-m] [-t rigid|affine|both] [-F|--force|--rerun]"
+    echo "Usage: sbatch image_correlation_fast.sh -r <reg_id> [-R reg_suffix] [-c corr_id] [-C corr_suffix] [--corr-romeo standard|nd] [-m] [-t rigid|affine|both] [-F|--force|--rerun]"
 }
 
 MASK=false
 FORCE=false
 TRANSFORM_MODE="both"
+ROMEO_FAMILY=""
 while [[ "$#" -gt 0 ]]; do
     case $1 in
         -r|--reg-id) REG_ID="$2"; shift ;;
         -R|--reg-suffix) REG_SUFFIX="$2"; shift ;;
         -c|--corr-id) CORR_ID="$2"; shift ;;
         -C|--corr-suffix) CORR_SUFFIX="$2"; shift ;;
+        --corr-romeo) ROMEO_FAMILY="${2,,}"; shift ;;
         -m|--mask) MASK=true ;;
         -t|--transform) TRANSFORM_MODE="$2"; shift ;;
         -F|--force|--rerun) FORCE=true ;;
@@ -62,8 +95,20 @@ if [ -z "$REG_ID" ]; then
     exit 1
 fi
 
-if [ -z "$CORR_ID" ]; then CORR_ID="$REG_ID"; fi
-if [ -z "$CORR_SUFFIX" ]; then CORR_SUFFIX="$REG_SUFFIX"; fi
+if [ -n "$ROMEO_FAMILY" ]; then
+    case "$ROMEO_FAMILY" in
+        standard) CORR_ID="gre_b0map_4iso_sag_romeo_unwrapped" ;;
+        nd) CORR_ID="gre_b0map_4iso_sag_ND_romeo_unwrapped" ;;
+        *)
+            echo "Error: --corr-romeo must be standard or nd." >&2
+            exit 2
+            ;;
+    esac
+    CORR_SUFFIX=""
+else
+    if [ -z "$CORR_ID" ]; then CORR_ID="$REG_ID"; fi
+    if [ -z "$CORR_SUFFIX" ]; then CORR_SUFFIX="$REG_SUFFIX"; fi
+fi
 
 strip_leading_underscores() {
     local value=$1
@@ -75,6 +120,18 @@ strip_leading_underscores() {
 
 [ -n "$REG_SUFFIX" ] && REG_SUFFIX=$(strip_leading_underscores "$REG_SUFFIX")
 [ -n "$CORR_SUFFIX" ] && CORR_SUFFIX=$(strip_leading_underscores "$CORR_SUFFIX")
+
+dataset_id() {
+    local id=$1 suffix=$2
+    if [ -n "$suffix" ]; then
+        echo "${id}_${suffix}"
+    else
+        echo "$id"
+    fi
+}
+
+REG_DATASET_ID=$(dataset_id "$REG_ID" "$REG_SUFFIX")
+CORR_DATASET_ID=$(dataset_id "$CORR_ID" "$CORR_SUFFIX")
 
 case "$TRANSFORM_MODE" in
     r|rigid|Rigid|RIGID)
@@ -99,6 +156,8 @@ esac
 REQUIRED_PROGRAMS=(antsRegistrationSyNQuick.sh antsApplyTransforms fslcc fslmaths fslstats awk find grep head sort env rm)
 [ "$MASK" = true ] && REQUIRED_PROGRAMS+=(mri_synthstrip)
 check_programs "${REQUIRED_PROGRAMS[@]}"
+export ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS=${SLURM_CPUS_PER_TASK:-1}
+export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
 if [ ! -f "$PLOT_SCRIPT" ]; then
     echo "Error: Plotting script not found: $PLOT_SCRIPT" >&2
     exit 1
@@ -109,11 +168,15 @@ if [ ! -x "$PLOT_PYTHON" ]; then
 fi
 
 # 2. Build Output IDs and Paths
-OUT_ID="${CORR_ID}"
-[ -n "$CORR_SUFFIX" ] && OUT_ID="${OUT_ID}_${CORR_SUFFIX}"
+if [ "$REG_DATASET_ID" = "$CORR_DATASET_ID" ]; then
+    OUT_ID="$CORR_DATASET_ID"
+else
+    OUT_ID="reg-${REG_DATASET_ID}__corr-${CORR_DATASET_ID}"
+fi
 [ "$MASK" = true ] && OUT_ID="${OUT_ID}_masked"
 
 BASE_DIR="/oak/stanford/groups/polimeni/saskia/data/THS_2026/orig"
+ROMEO_ROOT="/oak/stanford/groups/polimeni/saskia/data/THS_2026/derivatives/preprocessing/b0_romeo"
 DERIV_DIR="/oak/stanford/groups/polimeni/saskia/data/THS_2026/derivatives/coregistration"
 OUT_DIR="${DERIV_DIR}/${OUT_ID}"
 mkdir -p "$OUT_DIR"
@@ -207,6 +270,32 @@ find_matching_file() {
     find "$search_path" -maxdepth 1 -type f 2>/dev/null | sort | grep -E "$fallback_regex" | head -n 1
 }
 
+find_romeo_file() {
+    local session=$1 family=$2
+    local session_dir="${ROMEO_ROOT}/${session}"
+    local path_regex match
+
+    if [ "$family" = "nd" ]; then
+        if [[ "$session" == *"_ses04" ]]; then
+            # The session-4 ND acquisition omits the _ND token.
+            path_regex='/gre_b0map_4iso_sag_[0-9]+_e2_ph_romeo/unwrapped\.nii(\.gz)?$'
+        else
+            path_regex='/gre_b0map_4iso_sag_ND_[0-9]+_e2_ph_romeo/unwrapped\.nii(\.gz)?$'
+        fi
+    else
+        path_regex='/gre_b0map_4iso_sag_[0-9]+_e2_ph_romeo/unwrapped\.nii(\.gz)?$'
+    fi
+
+    match=$(find "$session_dir" -mindepth 2 -maxdepth 2 -type f 2>/dev/null |
+        sort | grep -E "$path_regex" || true)
+    if [ "$(printf '%s\n' "$match" | sed '/^$/d' | wc -l)" -gt 1 ]; then
+        echo "Error: Multiple ${family} ROMEO outputs found for ${session}." >&2
+        printf '%s\n' "$match" >&2
+        return 2
+    fi
+    [ -n "$match" ] && printf '%s\n' "$match"
+}
+
 REG_REGEX=$(build_regex "$REG_ID" "$REG_SUFFIX")
 CORR_REGEX=$(build_regex "$CORR_ID" "$CORR_SUFFIX")
 
@@ -226,7 +315,11 @@ for (( ses_idx=0; ses_idx<NUM_SES; ses_idx++ )); do
 
     if [ -d "$search_path" ]; then
         R_FILE=$(find_matching_file "$search_path" "$REG_ID" "$REG_SUFFIX" "$ses" "$REG_REGEX")
-        C_FILE=$(find_matching_file "$search_path" "$CORR_ID" "$CORR_SUFFIX" "$ses" "$CORR_REGEX")
+        if [ -n "$ROMEO_FAMILY" ]; then
+            C_FILE=$(find_romeo_file "$ses" "$ROMEO_FAMILY")
+        else
+            C_FILE=$(find_matching_file "$search_path" "$CORR_ID" "$CORR_SUFFIX" "$ses" "$CORR_REGEX")
+        fi
     fi
 
     if [[ -n "$R_FILE" && -f "$R_FILE" && -n "$C_FILE" && -f "$C_FILE" ]]; then
@@ -273,6 +366,26 @@ TOTAL_PAIRS=$((NUM_SES * NUM_SES))
 USE_SESSION_TEMP_NAMES=false
 [ "$NUM_VALID" -lt "$NUM_SES" ] && USE_SESSION_TEMP_NAMES=true
 
+printf -v RUN_COMMAND '%q ' "$0" "${ORIGINAL_ARGS[@]}"
+RUN_COMMAND=${RUN_COMMAND% }
+GENERATED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+write_matrix_provenance() {
+    local matrix_file=$1
+    local transform=$2
+    local provenance_file="${matrix_file%.txt}_provenance.tsv"
+    local idx status
+    local row
+
+    printf "script\tgenerated_at\tcommand\ttransform\tmasked\tregistration_id\tregistration_suffix\tcorrelation_id\tcorrelation_suffix\toutput_id\tsession\tstatus\tregistration_file\tcorrelation_file\n" > "$provenance_file"
+    for (( idx=0; idx<NUM_SES; idx++ )); do
+        status="missing"
+        [ "${SESSION_AVAILABLE[$idx]}" = true ] && status="ready"
+        row=("$0" "$GENERATED_AT" "$RUN_COMMAND" "$transform" "$MASK" "$REG_ID" "${REG_SUFFIX:-}" "$CORR_ID" "${CORR_SUFFIX:-}" "$OUT_ID" "${SESSION_DIRS[$idx]}" "$status" "${REG_FILES[$idx]:-}" "${CORR_FILES[$idx]:-}")
+        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" "${row[@]}" >> "$provenance_file"
+    done
+}
+
 if [ "$FORCE" = true ] && [ "$MASK" = true ]; then
     echo "Clearing existing masks for complete re-run..."
     rm -f "${OUT_DIR}"/mask_*.nii.gz
@@ -286,6 +399,8 @@ for (( t=0; t<${#TRANSFORM_FLAGS[@]}; t++ )); do
     RMSE_MATRIX_FILE="${OUT_DIR}/rmse_matrix_${NAME}_${OUT_ID}.txt"
     > "$CORR_MATRIX_FILE"
     > "$RMSE_MATRIX_FILE"
+    write_matrix_provenance "$CORR_MATRIX_FILE" "$NAME"
+    write_matrix_provenance "$RMSE_MATRIX_FILE" "$NAME"
 
     if [ "$FORCE" = true ]; then
         echo "Clearing existing $NAME pair outputs for complete re-run..."
