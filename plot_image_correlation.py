@@ -153,6 +153,18 @@ def metric_from_filename(filename, folder_name):
             "vmax": None,
         }
 
+    if filename.startswith("wm_mapd_matrix_") and filename.endswith(suffix):
+        transform_name = filename.replace("wm_mapd_matrix_", "").replace(suffix, "")
+        return {
+            "name": "WM MAPD (%)",
+            "title": "Cross-Session White-Matter Mean Absolute Percent Difference",
+            "transform": transform_name,
+            "fmt": ".1f",
+            "cmap": "magma",
+            "vmin": 0.0,
+            "vmax": None,
+        }
+
     return None
 
 
@@ -318,7 +330,12 @@ def main():
         sys.exit(1)
 
     matrix_files = []
-    for prefix in ("correlation_matrix_", "rmse_matrix_", "mapd_matrix_"):
+    for prefix in (
+        "correlation_matrix_",
+        "rmse_matrix_",
+        "mapd_matrix_",
+        "wm_mapd_matrix_",
+    ):
         search_pattern = os.path.join(target_dir, f"{prefix}*.txt")
         matrix_files.extend(glob.glob(search_pattern))
 
