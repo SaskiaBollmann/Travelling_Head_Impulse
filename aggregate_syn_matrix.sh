@@ -144,6 +144,7 @@ DERIV_DIR="/oak/stanford/groups/polimeni/saskia/data/THS_2026/derivatives/coregi
 OUT_DIR="${DERIV_DIR}/${OUT_ID}"
 CORR_MATRIX_FILE="${OUT_DIR}/correlation_matrix_SyN_${OUT_ID}.txt"
 RMSE_MATRIX_FILE="${OUT_DIR}/rmse_matrix_SyN_${OUT_ID}.txt"
+MAPD_MATRIX_FILE="${OUT_DIR}/mapd_matrix_SyN_${OUT_ID}.txt"
 
 if [ ! -d "$OUT_DIR" ]; then
     echo "Error: Directory $OUT_DIR not found."
@@ -152,6 +153,7 @@ fi
 
 > "$CORR_MATRIX_FILE"
 > "$RMSE_MATRIX_FILE"
+> "$MAPD_MATRIX_FILE"
 NUM_SES=7
 SESSION_DIRS=(
     "260529_THS_ses01"
@@ -189,9 +191,11 @@ echo "Aggregating SyN matrices for $OUT_ID..."
 for (( i=0; i<$NUM_SES; i++ )); do
     ROW_CORR=""
     ROW_RMSE=""
+    ROW_MAPD=""
     for (( j=0; j<$NUM_SES; j++ )); do
         CORR_TEMP_FILE="${OUT_DIR}/tmp_corr_SyN_${i}_${j}.txt"
         RMSE_TEMP_FILE="${OUT_DIR}/tmp_rmse_SyN_${i}_${j}.txt"
+        MAPD_TEMP_FILE="${OUT_DIR}/tmp_mapd_SyN_${i}_${j}.txt"
 
         if [ -f "$CORR_TEMP_FILE" ]; then
             CORR=$(cat "$CORR_TEMP_FILE")
@@ -205,20 +209,31 @@ for (( i=0; i<$NUM_SES; i++ )); do
             RMSE="NaN"
         fi
 
+        if [ -f "$MAPD_TEMP_FILE" ]; then
+            MAPD=$(cat "$MAPD_TEMP_FILE")
+        else
+            MAPD="NaN"
+        fi
+
         ROW_CORR="$ROW_CORR $CORR"
         ROW_RMSE="$ROW_RMSE $RMSE"
+        ROW_MAPD="$ROW_MAPD $MAPD"
     done
     echo "$ROW_CORR" >> "$CORR_MATRIX_FILE"
     echo "$ROW_RMSE" >> "$RMSE_MATRIX_FILE"
+    echo "$ROW_MAPD" >> "$MAPD_MATRIX_FILE"
 done
 
 echo "Correlation matrix built at: $CORR_MATRIX_FILE"
 echo "RMSE matrix built at: $RMSE_MATRIX_FILE"
+echo "MAPD matrix built at: $MAPD_MATRIX_FILE"
 write_syn_matrix_provenance "$CORR_MATRIX_FILE"
 write_syn_matrix_provenance "$RMSE_MATRIX_FILE"
+write_syn_matrix_provenance "$MAPD_MATRIX_FILE"
 if [ "$CLEANUP_TEMP" = true ]; then
     rm -f "${OUT_DIR}"/tmp_corr_SyN_*.txt 2>/dev/null
     rm -f "${OUT_DIR}"/tmp_rmse_SyN_*.txt 2>/dev/null
+    rm -f "${OUT_DIR}"/tmp_mapd_SyN_*.txt 2>/dev/null
 else
     echo "Pair temp files kept for resume support."
 fi

@@ -34,7 +34,9 @@ PLOT_SCRIPT=$(resolve_plot_script) || {
     echo "Error: Could not locate plot_image_correlation.py." >&2
     exit 1
 }
+PERCENT_DIFF_SCRIPT="$(dirname "$PLOT_SCRIPT")/compute_percent_difference.py"
 PLOT_PYTHON="/home/users/sasbo/miniconda3/envs/THS_env/bin/python3"
+PERCENT_DIFF_PYTHON="/home/users/sasbo/miniconda3/bin/python3"
 ORIGINAL_ARGS=("$@")
 
 
@@ -162,8 +164,21 @@ if [ ! -f "$PLOT_SCRIPT" ]; then
     echo "Error: Plotting script not found: $PLOT_SCRIPT" >&2
     exit 1
 fi
+if [ ! -f "$PERCENT_DIFF_SCRIPT" ]; then
+    echo "Error: Percent-difference script not found: $PERCENT_DIFF_SCRIPT" >&2
+    exit 1
+fi
 if [ ! -x "$PLOT_PYTHON" ]; then
     echo "Error: Plotting Python not found or not executable: $PLOT_PYTHON" >&2
+    exit 1
+fi
+if [ ! -x "$PERCENT_DIFF_PYTHON" ]; then
+    echo "Error: Percent-difference Python not found or not executable: $PERCENT_DIFF_PYTHON" >&2
+    exit 1
+fi
+if ! env -u PYTHONPATH -u PYTHONHOME "$PERCENT_DIFF_PYTHON" -c \
+    "import nibabel, numpy"; then
+    echo "Error: Percent-difference Python requires nibabel and numpy." >&2
     exit 1
 fi
 
@@ -397,20 +412,25 @@ for (( t=0; t<${#TRANSFORM_FLAGS[@]}; t++ )); do
     
     CORR_MATRIX_FILE="${OUT_DIR}/correlation_matrix_${NAME}_${OUT_ID}.txt"
     RMSE_MATRIX_FILE="${OUT_DIR}/rmse_matrix_${NAME}_${OUT_ID}.txt"
+    MAPD_MATRIX_FILE="${OUT_DIR}/mapd_matrix_${NAME}_${OUT_ID}.txt"
     > "$CORR_MATRIX_FILE"
     > "$RMSE_MATRIX_FILE"
+    > "$MAPD_MATRIX_FILE"
     write_matrix_provenance "$CORR_MATRIX_FILE" "$NAME"
     write_matrix_provenance "$RMSE_MATRIX_FILE" "$NAME"
+    write_matrix_provenance "$MAPD_MATRIX_FILE" "$NAME"
 
     if [ "$FORCE" = true ]; then
         echo "Clearing existing $NAME pair outputs for complete re-run..."
-        rm -f "${OUT_DIR}/tmp_corr_${NAME}_"*.txt "${OUT_DIR}/tmp_rmse_${NAME}_"*.txt "${OUT_DIR}/reg_${NAME}_mov_"*
+        rm -f "${OUT_DIR}/tmp_corr_${NAME}_"*.txt "${OUT_DIR}/tmp_rmse_${NAME}_"*.txt \
+            "${OUT_DIR}/tmp_mapd_${NAME}_"*.txt "${OUT_DIR}/reg_${NAME}_mov_"*
     fi
 
     echo "Executing $NAME Pipeline with transform flag $FLAG across $TOTAL_PAIRS session pairs..."
     for (( i=0; i<NUM_SES; i++ )); do
         ROW_CORR=""
         ROW_RMSE=""
+        ROW_MAPD=""
         MOV_SES="${SESSION_DIRS[$i]}"
         echo "  Matrix row $((i + 1))/$NUM_SES: moving session $MOV_SES"
 
@@ -419,13 +439,16 @@ for (( t=0; t<${#TRANSFORM_FLAGS[@]}; t++ )); do
 
             OUT_PREFIX="${OUT_DIR}/reg_${NAME}_mov_${MOV_SES}_to_fix_${FIX_SES}_"
             WARPED_CORR="${OUT_PREFIX}CORR_Warped.nii.gz"
+            PERCENT_DIFF="${OUT_PREFIX}PERCENT_DIFF.nii.gz"
             TRANSFORM_MAT="${OUT_PREFIX}0GenericAffine.mat"
             if [ "$USE_SESSION_TEMP_NAMES" = true ]; then
                 TEMP_CORR="${OUT_DIR}/tmp_corr_${NAME}_${MOV_SES}_to_${FIX_SES}.txt"
                 TEMP_RMSE="${OUT_DIR}/tmp_rmse_${NAME}_${MOV_SES}_to_${FIX_SES}.txt"
+                TEMP_MAPD="${OUT_DIR}/tmp_mapd_${NAME}_${MOV_SES}_to_${FIX_SES}.txt"
             else
                 TEMP_CORR="${OUT_DIR}/tmp_corr_${NAME}_${i}_${j}.txt"
                 TEMP_RMSE="${OUT_DIR}/tmp_rmse_${NAME}_${i}_${j}.txt"
+                TEMP_MAPD="${OUT_DIR}/tmp_mapd_${NAME}_${i}_${j}.txt"
             fi
             PAIR_NUM=$((i * NUM_SES + j + 1))
 
@@ -435,10 +458,13 @@ for (( t=0; t<${#TRANSFORM_FLAGS[@]}; t++ )); do
                 echo "      Missing acquisition; writing NaN for this matrix pair."
                 CORR="NaN"
                 RMSE="NaN"
+                MAPD="NaN"
                 echo "$CORR" > "$TEMP_CORR"
                 echo "$RMSE" > "$TEMP_RMSE"
+                echo "$MAPD" > "$TEMP_MAPD"
                 ROW_CORR="$ROW_CORR $CORR"
                 ROW_RMSE="$ROW_RMSE $RMSE"
+                ROW_MAPD="$ROW_MAPD $MAPD"
                 continue
             fi
 
@@ -446,13 +472,15 @@ for (( t=0; t<${#TRANSFORM_FLAGS[@]}; t++ )); do
             echo "      Correlation/RMSE images: ${CORR_FILES[$i]##*/} -> ${CORR_FILES[$j]##*/}"
 
             if [ "$FORCE" = true ]; then
-                rm -f "${OUT_PREFIX}"* "$TEMP_CORR" "$TEMP_RMSE"
-            elif [[ -s "$TEMP_CORR" && -s "$TEMP_RMSE" ]]; then
+                rm -f "${OUT_PREFIX}"* "$TEMP_CORR" "$TEMP_RMSE" "$TEMP_MAPD"
+            elif [[ -s "$TEMP_CORR" && -s "$TEMP_RMSE" && -s "$TEMP_MAPD" && -s "$PERCENT_DIFF" ]]; then
                 CORR=$(<"$TEMP_CORR")
                 RMSE=$(<"$TEMP_RMSE")
-                echo "      Reusing completed metrics: correlation=$CORR rmse=$RMSE"
+                MAPD=$(<"$TEMP_MAPD")
+                echo "      Reusing completed metrics: correlation=$CORR rmse=$RMSE mapd=${MAPD}%"
                 ROW_CORR="$ROW_CORR $CORR"
                 ROW_RMSE="$ROW_RMSE $RMSE"
+                ROW_MAPD="$ROW_MAPD $MAPD"
                 continue
             fi
 
@@ -487,6 +515,7 @@ for (( t=0; t<${#TRANSFORM_FLAGS[@]}; t++ )); do
                 echo "      Warning: transform matrix not found; writing NaN for this pair."
                 echo "NaN" > "$TEMP_CORR"
                 echo "NaN" > "$TEMP_RMSE"
+                echo "NaN" > "$TEMP_MAPD"
             fi
 
             if [ -f "$WARPED_CORR" ]; then
@@ -515,24 +544,52 @@ for (( t=0; t<${#TRANSFORM_FLAGS[@]}; t++ )); do
                     RMSE="NaN"
                 fi
                 rm "$TMP_SQR" 2>/dev/null
+
+                # 4c. Compute the normalized percent-difference image and its
+                # mean absolute value using the same definition as the
+                # TrueForm/patient-specific comparison.
+                echo "      Computing percent-difference image..."
+                PERCENT_DIFF_ARGS=(
+                    --fixed "${CORR_FILES[$j]}"
+                    --moving "$WARPED_CORR"
+                    --output "$PERCENT_DIFF"
+                    --metric-output "$TEMP_MAPD"
+                )
+                if [ "$MASK" = true ]; then
+                    PERCENT_DIFF_ARGS+=(--mask "$MASK_FILE")
+                fi
+                if env -u PYTHONPATH -u PYTHONHOME "$PERCENT_DIFF_PYTHON" \
+                    "$PERCENT_DIFF_SCRIPT" "${PERCENT_DIFF_ARGS[@]}"; then
+                    MAPD=$(<"$TEMP_MAPD")
+                else
+                    echo "      Warning: percent-difference computation failed; writing NaN." >&2
+                    MAPD="NaN"
+                    echo "$MAPD" > "$TEMP_MAPD"
+                    rm -f "$PERCENT_DIFF"
+                fi
+
                 echo "$CORR" > "$TEMP_CORR"
                 echo "$RMSE" > "$TEMP_RMSE"
-                echo "      Result: correlation=$CORR rmse=$RMSE"
+                echo "      Result: correlation=$CORR rmse=$RMSE mapd=${MAPD}%"
             else
                 echo "      Warning: transformed correlation/RMSE image not found; writing NaN for this pair."
                 CORR="NaN"
                 RMSE="NaN"
+                MAPD="NaN"
                 echo "$CORR" > "$TEMP_CORR"
                 echo "$RMSE" > "$TEMP_RMSE"
+                echo "$MAPD" > "$TEMP_MAPD"
             fi
 
             ROW_CORR="$ROW_CORR $CORR"
             ROW_RMSE="$ROW_RMSE $RMSE"
+            ROW_MAPD="$ROW_MAPD $MAPD"
         done
         echo "$ROW_CORR" >> "$CORR_MATRIX_FILE"
         echo "$ROW_RMSE" >> "$RMSE_MATRIX_FILE"
+        echo "$ROW_MAPD" >> "$MAPD_MATRIX_FILE"
     done
 done
-echo "Linear matrices completed: Correlation and RMSE."
+echo "Linear matrices completed: Correlation, RMSE, and mean absolute percent difference."
 echo "Generating plots..."
 env -u PYTHONPATH -u PYTHONHOME MPLBACKEND=Agg "$PLOT_PYTHON" "$PLOT_SCRIPT" "$OUT_ID"

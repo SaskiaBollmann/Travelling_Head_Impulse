@@ -141,6 +141,18 @@ def metric_from_filename(filename, folder_name):
             "vmax": None,
         }
 
+    if filename.startswith("mapd_matrix_") and filename.endswith(suffix):
+        transform_name = filename.replace("mapd_matrix_", "").replace(suffix, "")
+        return {
+            "name": "MAPD (%)",
+            "title": "Cross-Session Mean Absolute Percent Difference",
+            "transform": transform_name,
+            "fmt": ".1f",
+            "cmap": "magma",
+            "vmin": 0.0,
+            "vmax": None,
+        }
+
     return None
 
 
@@ -306,12 +318,15 @@ def main():
         sys.exit(1)
 
     matrix_files = []
-    for prefix in ("correlation_matrix_", "rmse_matrix_"):
+    for prefix in ("correlation_matrix_", "rmse_matrix_", "mapd_matrix_"):
         search_pattern = os.path.join(target_dir, f"{prefix}*.txt")
         matrix_files.extend(glob.glob(search_pattern))
 
     if not matrix_files:
-        print(f"No correlation or RMSE text matrices found in {target_dir!r}.")
+        print(
+            "No correlation, RMSE, or mean absolute percent-difference "
+            f"text matrices found in {target_dir!r}."
+        )
         sys.exit(1)
 
     print(f"Found {len(matrix_files)} matrix file(s) for {folder_name!r}. Generating plots...")

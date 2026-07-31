@@ -13,6 +13,31 @@ if [ -z "$BASH_VERSION" ]; then
 fi
 ORIGINAL_ARGS=("$@")
 
+resolve_percent_difference_script() {
+    local source_dir candidate
+    source_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+    for candidate in \
+        "${THI_SCRIPT_DIR:-}" \
+        "$source_dir" \
+        "${SLURM_SUBMIT_DIR:-}" \
+        "/home/users/sasbo/code/Travelling_Head_Impulse"; do
+        if [ -n "$candidate" ] &&
+           [ -f "${candidate}/compute_percent_difference.py" ]; then
+            printf '%s\n' "${candidate}/compute_percent_difference.py"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+PERCENT_DIFF_SCRIPT=$(resolve_percent_difference_script) || {
+    echo "Error: Could not locate compute_percent_difference.py." >&2
+    exit 1
+}
+PERCENT_DIFF_PYTHON="/home/users/sasbo/miniconda3/bin/python3"
+
 check_programs() {
     local missing=()
     local program
@@ -147,6 +172,15 @@ ml freesurfer || { echo "Error: Failed to load FreeSurfer module." >&2; exit 1; 
 REQUIRED_PROGRAMS=(antsRegistrationSyNQuick.sh antsApplyTransforms fslcc fslmaths fslstats awk find grep head sort mv rm sleep rmdir)
 [ "$MASK" = true ] && REQUIRED_PROGRAMS+=(mri_synthstrip)
 check_programs "${REQUIRED_PROGRAMS[@]}"
+if [ ! -f "$PERCENT_DIFF_SCRIPT" ] || [ ! -x "$PERCENT_DIFF_PYTHON" ]; then
+    echo "Error: Percent-difference helper or Python executable is unavailable." >&2
+    exit 1
+fi
+if ! env -u PYTHONPATH -u PYTHONHOME "$PERCENT_DIFF_PYTHON" -c \
+    "import nibabel, numpy"; then
+    echo "Error: Percent-difference Python requires nibabel and numpy." >&2
+    exit 1
+fi
 
 # 2. Build output IDs and paths.
 if [ "$REG_DATASET_ID" = "$CORR_DATASET_ID" ]; then
@@ -291,12 +325,14 @@ OUT_PREFIX="${OUT_DIR}/reg_SyN_mov_${MOV_SES}_to_fix_${FIX_SES}_"
 AFFINE_TRANSFORM="${OUT_PREFIX}0GenericAffine.mat"
 WARP_TRANSFORM="${OUT_PREFIX}1Warp.nii.gz"
 WARPED_CORR="${OUT_PREFIX}CORR_Warped.nii.gz"
+PERCENT_DIFF="${OUT_PREFIX}PERCENT_DIFF.nii.gz"
 TEMP_CORR="${OUT_DIR}/tmp_corr_SyN_${i}_${j}.txt"
 TEMP_RMSE="${OUT_DIR}/tmp_rmse_SyN_${i}_${j}.txt"
+TEMP_MAPD="${OUT_DIR}/tmp_mapd_SyN_${i}_${j}.txt"
 
 if [ "$FORCE" = true ]; then
     echo "Force re-run requested for ${MOV_SES} -> ${FIX_SES}; removing existing pair outputs."
-    rm -f "${OUT_PREFIX}"* "$TEMP_CORR" "$TEMP_RMSE"
+    rm -f "${OUT_PREFIX}"* "$TEMP_CORR" "$TEMP_RMSE" "$TEMP_MAPD"
 fi
 
 # 5. Dynamically locate the registration and correlation/RMSE images.
@@ -313,7 +349,7 @@ printf "script\tgenerated_at\tcommand\ttransform\tmasked\tregistration_id\tregis
 PAIR_ROW=("$0" "$GENERATED_AT" "$RUN_COMMAND" "SyN" "$MASK" "$REG_ID" "${REG_SUFFIX:-}" "$CORR_ID" "${CORR_SUFFIX:-}" "$OUT_ID" "${SLURM_JOB_ID:-}" "$TASK_ID" "$MOV_SES" "$FIX_SES" "$PAIR_STATUS" "$MOVING_REG" "$FIXED_REG" "$MOVING_CORR" "$FIXED_CORR")
 printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" "${PAIR_ROW[@]}" >> "$PAIR_PROVENANCE"
 
-if [ "$FORCE" = false ] && [[ -s "$TEMP_CORR" && -s "$TEMP_RMSE" ]]; then
+if [ "$FORCE" = false ] && [[ -s "$TEMP_CORR" && -s "$TEMP_RMSE" && -s "$TEMP_MAPD" && -s "$PERCENT_DIFF" ]]; then
     echo "Completed SyN metrics already exist for ${MOV_SES} -> ${FIX_SES}. Skipping."
     exit 0
 fi
@@ -323,6 +359,7 @@ if [[ -z "$MOVING_REG" || -z "$FIXED_REG" || -z "$MOVING_CORR" || -z "$FIXED_COR
     echo "Missing required file for either ${MOV_SES} or ${FIX_SES}. Skipping this matrix pair."
     echo "NaN" > "$TEMP_CORR"
     echo "NaN" > "$TEMP_RMSE"
+    echo "NaN" > "$TEMP_MAPD"
     exit 0
 fi
 
@@ -384,6 +421,7 @@ else
     echo "Warning: SyN transform files not found; writing NaN for this pair."
     echo "NaN" > "$TEMP_CORR"
     echo "NaN" > "$TEMP_RMSE"
+    echo "NaN" > "$TEMP_MAPD"
     exit 0
 fi
 
@@ -412,7 +450,31 @@ else
     RMSE="NaN"
 fi
 
+if [ -f "$WARPED_CORR" ]; then
+    PERCENT_DIFF_ARGS=(
+        --fixed "$FIXED_CORR"
+        --moving "$WARPED_CORR"
+        --output "$PERCENT_DIFF"
+        --metric-output "$TEMP_MAPD"
+    )
+    if [ "$MASK" = true ]; then
+        PERCENT_DIFF_ARGS+=(--mask "$MASK_FILE")
+    fi
+    if env -u PYTHONPATH -u PYTHONHOME "$PERCENT_DIFF_PYTHON" \
+        "$PERCENT_DIFF_SCRIPT" "${PERCENT_DIFF_ARGS[@]}"; then
+        MAPD=$(<"$TEMP_MAPD")
+    else
+        echo "Warning: percent-difference computation failed; writing NaN." >&2
+        MAPD="NaN"
+        echo "$MAPD" > "$TEMP_MAPD"
+        rm -f "$PERCENT_DIFF"
+    fi
+else
+    MAPD="NaN"
+    echo "$MAPD" > "$TEMP_MAPD"
+fi
+
 # Save the extracted metric values to temporary individual files.
 echo "${CORR}" > "$TEMP_CORR"
 echo "${RMSE}" > "$TEMP_RMSE"
-echo "Result: correlation=${CORR} rmse=${RMSE}"
+echo "Result: correlation=${CORR} rmse=${RMSE} mapd=${MAPD}%"
