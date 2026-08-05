@@ -28,6 +28,13 @@ Usage: preprocess_epi_afni.sh [options]
 Realign every 4D dzne_ep3d and ep2d_bold magnitude run with AFNI 3dvolreg,
 then calculate its temporal mean and tSNR from the realigned time series.
 
+When a session has more than one 4D ep3d run from the same protocol (e.g.
+dzne_ep3d_vasoNIH acquired as two back-to-back runs), the runs are
+concatenated in series-number order with 3dTcat into a single combined time
+series first, and realignment/mean/tSNR run once on that combined series
+instead of once per run. This only applies to ep3d runs that share one grid;
+mismatched or single-run families are processed as before.
+
 Options:
   -s, --session NAME       Process one session (repeatable). Default: all.
   -t, --type TYPE          ep3d, ep2d, or both (default: both).
@@ -37,9 +44,9 @@ Options:
   -n, --dry-run            Print selected runs and commands without processing.
   -h, --help               Show this help.
 
-Each run is aligned independently to its middle time point. Single-volume
-images and *_ph phase images are skipped. AFNI's 3dTstat -tsnr computes
-abs(mean)/temporal-standard-deviation without detrending.
+Each (possibly combined) series is aligned to its own middle time point.
+Single-volume images and *_ph phase images are skipped. AFNI's 3dTstat -tsnr
+computes abs(mean)/temporal-standard-deviation without detrending.
 EOF
 }
 
@@ -74,7 +81,7 @@ command -v ml >/dev/null 2>&1 || {
     echo "Error: The 'ml' module command is unavailable." >&2; exit 1;
 }
 ml afni/26.0.07
-for program in 3dinfo 3dvolreg 3dTstat; do
+for program in 3dinfo 3dvolreg 3dTstat 3dTcat; do
     command -v "$program" >/dev/null 2>&1 || {
         echo "Error: ${program} was not found after loading AFNI." >&2; exit 1;
     }
@@ -96,6 +103,33 @@ classify_image() {
     esac
 }
 
+family_key() {
+    # Strip a trailing series number (e.g. "..._65" -> "...") so repeated
+    # runs of the same protocol group together; series-numberless stems
+    # (e.g. multi-echo "..._e1") are left as their own singleton family.
+    local stem=$1
+    if [[ "$stem" =~ ^(.*)_([0-9]+)$ ]]; then
+        printf '%s\n' "${BASH_REMATCH[1]}"
+    else
+        printf '%s\n' "$stem"
+    fi
+}
+
+series_number() {
+    local stem=$1
+    if [[ "$stem" =~ _([0-9]+)$ ]]; then
+        printf '%s\n' "${BASH_REMATCH[1]}"
+    else
+        printf '0\n'
+    fi
+}
+
+grids_match() {
+    local result
+    result=$(3dinfo -same_grid "$1" "$2" 2>/dev/null) || return 1
+    [ "$(printf '%s\n' "$result" | sort -u)" = "1" ]
+}
+
 run_command() {
     if [ "$DRY_RUN" = true ]; then
         printf '  command:'; printf ' %q' "$@"; printf '\n'
@@ -107,10 +141,17 @@ run_command() {
 }
 
 process_run() {
-    local session=$1 input=$2 kind=$3
+    local session=$1 input=$2 kind=$3 known_nvol=${4:-} known_base_index=${5:-}
     local nvol base_index stem out_dir realigned mean tsnr motion matrix output
 
-    nvol=$(3dinfo -nt "$input")
+    if [ -n "$known_nvol" ]; then
+        # Set by the caller for a not-yet-materialized combined series (its
+        # volume count is just the sum of its already-on-disk source runs),
+        # so this does not depend on $input existing yet.
+        nvol=$known_nvol
+    else
+        nvol=$(3dinfo -nt "$input")
+    fi
     [[ "$nvol" =~ ^[0-9]+$ ]] || {
         echo "Error: Could not read time-point count: ${input}" >&2; return 1;
     }
@@ -119,7 +160,14 @@ process_run() {
         return
     fi
 
-    base_index=$((nvol / 2))
+    if [ -n "$known_base_index" ]; then
+        # Set by the caller for a combined series, so the reference volume
+        # falls in the middle of the first source run instead of landing
+        # near the seam between runs.
+        base_index=$known_base_index
+    else
+        base_index=$((nvol / 2))
+    fi
     stem=$(strip_nii_extension "$input")
     out_dir="${OUT_ROOT}/${session}/${stem}_afni"
     realigned="${out_dir}/${stem}_realigned.nii.gz"
@@ -168,6 +216,40 @@ process_run() {
     echo "[Done] ${stem}"
 }
 
+concatenate_runs() {
+    # Only the final combined path goes to stdout (the caller captures it via
+    # command substitution); every diagnostic line must go to stderr instead.
+    local session=$1 combined_stem=$2
+    shift 2
+    local inputs=("$@")
+    local out_dir="${OUT_ROOT}/${session}/${combined_stem}_afni"
+    local combined="${out_dir}/${combined_stem}.nii.gz"
+
+    echo "[Combine] ${session}: ${combined_stem} <- ${#inputs[@]} runs" >&2
+    local input
+    for input in "${inputs[@]}"; do
+        echo "    ${input##*/}" >&2
+    done
+
+    if [ "$DRY_RUN" = true ]; then
+        run_command 3dTcat -prefix "$combined" "${inputs[@]}" >&2
+        printf '%s\n' "$combined"
+        return
+    fi
+
+    mkdir -p "$out_dir"
+    if [ "$FORCE" = true ] || [ ! -f "$combined" ]; then
+        run_command 3dTcat -prefix "$combined" "${inputs[@]}" >&2
+    else
+        echo "  [Exists] Combined series; reusing." >&2
+    fi
+    [ -f "$combined" ] || {
+        echo "Error: Expected combined output was not created: ${combined}" >&2
+        return 1
+    }
+    printf '%s\n' "$combined"
+}
+
 failures=0
 selected=0
 for session in "${SESSIONS[@]}"; do
@@ -176,15 +258,108 @@ for session in "${SESSIONS[@]}"; do
         echo "Error: Session directory not found: ${session_dir}" >&2
         failures=$((failures + 1)); continue
     fi
+
+    unset family_members
+    declare -A family_members=()
     while IFS= read -r input; do
         [ -n "$input" ] || continue
         kind=$(classify_image "$input") || continue
         if [ "$IMAGE_TYPE" != both ] && [ "$IMAGE_TYPE" != "$kind" ]; then
             continue
         fi
-        selected=$((selected + 1))
-        process_run "$session" "$input" "$kind" || failures=$((failures + 1))
+        family=$(family_key "$(strip_nii_extension "$input")")
+        family_members["${kind}:${family}"]+="${input}"$'\n'
     done < <(find "$session_dir" -maxdepth 1 -type f | sort)
+
+    for key in "${!family_members[@]}"; do
+        kind=${key%%:*}
+        mapfile -t members < <(printf '%s' "${family_members[$key]}" | sed '/^$/d')
+
+        # Only ep3d runs are candidates for auto-combining, and only the
+        # multi-volume (dynamic) ones among them -- a lone static image
+        # sharing the family name (e.g. an SBRef) is processed on its own.
+        dynamic=()
+        static=()
+        if [ "$kind" = ep3d ] && [ "${#members[@]}" -gt 1 ]; then
+            for input in "${members[@]}"; do
+                nvol=$(3dinfo -nt "$input")
+                if [[ "$nvol" =~ ^[0-9]+$ ]] && [ "$nvol" -gt 1 ]; then
+                    dynamic+=("$input")
+                else
+                    static+=("$input")
+                fi
+            done
+        else
+            static=("${members[@]}")
+        fi
+
+        if [ "${#static[@]}" -gt 0 ]; then
+            for input in "${static[@]}"; do
+                selected=$((selected + 1))
+                process_run "$session" "$input" "$kind" || failures=$((failures + 1))
+            done
+        fi
+
+        if [ "${#dynamic[@]}" -le 1 ]; then
+            if [ "${#dynamic[@]}" -eq 1 ]; then
+                selected=$((selected + 1))
+                process_run "$session" "${dynamic[0]}" "$kind" || failures=$((failures + 1))
+            fi
+            continue
+        fi
+
+        # Multiple dynamic runs of the same protocol: order by series number
+        # and require a shared grid before combining.
+        ordered=()
+        while IFS=$'\t' read -r _ input; do
+            ordered+=("$input")
+        done < <(
+            for input in "${dynamic[@]}"; do
+                printf '%s\t%s\n' "$(series_number "$(strip_nii_extension "$input")")" "$input"
+            done | sort -n -k1,1
+        )
+
+        grid_ok=true
+        for input in "${ordered[@]:1}"; do
+            grids_match "${ordered[0]}" "$input" || { grid_ok=false; break; }
+        done
+
+        if [ "$grid_ok" != true ]; then
+            echo "Warning: ${session} ${key#*:}: runs do not share one grid; processing separately." >&2
+            for input in "${ordered[@]}"; do
+                selected=$((selected + 1))
+                process_run "$session" "$input" "$kind" || failures=$((failures + 1))
+            done
+            continue
+        fi
+
+        series_numbers=()
+        combined_nvol=0
+        first_run_nvol=""
+        for input in "${ordered[@]}"; do
+            series_numbers+=("$(series_number "$(strip_nii_extension "$input")")")
+            input_nvol=$(3dinfo -nt "$input")
+            [[ "$input_nvol" =~ ^[0-9]+$ ]] || {
+                echo "Error: Could not read time-point count: ${input}" >&2
+                failures=$((failures + 1)); continue 2
+            }
+            [ -n "$first_run_nvol" ] || first_run_nvol=$input_nvol
+            combined_nvol=$((combined_nvol + input_nvol))
+        done
+        combined_stem="${key#*:}_run$(IFS=-; echo "${series_numbers[*]}")"
+
+        # Reference the middle volume of the first run rather than the
+        # middle of the combined series, which would otherwise land right
+        # on the seam between the first and second run.
+        combined_base_index=$((first_run_nvol / 2))
+
+        combined=$(concatenate_runs "$session" "$combined_stem" "${ordered[@]}") || {
+            failures=$((failures + 1)); continue
+        }
+        selected=$((selected + 1))
+        process_run "$session" "$combined" "$kind" "$combined_nvol" "$combined_base_index" ||
+            failures=$((failures + 1))
+    done
 done
 
 [ "$selected" -gt 0 ] || {
