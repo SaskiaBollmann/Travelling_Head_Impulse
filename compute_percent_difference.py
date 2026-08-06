@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-"""Compute a robustly scaled percent-difference image for one registered pair."""
+"""Compute a percent-difference image for one registered pair."""
 
 import argparse
 from pathlib import Path
@@ -21,6 +21,11 @@ def parse_args():
     parser.add_argument("--mask", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--metric-output", type=Path, required=True)
+    parser.add_argument(
+        "--physical-values",
+        action="store_true",
+        help="Use input values directly instead of percentile normalization.",
+    )
     return parser.parse_args()
 
 
@@ -62,20 +67,24 @@ def main():
     if not np.any(mask):
         raise SystemExit("The common comparison mask is empty.")
 
-    fixed_norm = robust_normalize(fixed, mask)
-    moving_norm = robust_normalize(moving, mask)
-
-    # Match the TrueForm/patient-specific comparison: values close to zero in
-    # the normalized reference make relative differences unstable.
-    percent_mask = mask & (fixed_norm >= 0.05)
+    if args.physical_values:
+        fixed_compare = fixed
+        moving_compare = moving
+        percent_mask = mask & (fixed != 0)
+    else:
+        fixed_compare = robust_normalize(fixed, mask)
+        moving_compare = robust_normalize(moving, mask)
+        # Values close to zero in the normalized reference make relative
+        # differences unstable.
+        percent_mask = mask & (fixed_compare >= 0.05)
     if not np.any(percent_mask):
         raise SystemExit("No voxels remain after the normalized-reference threshold.")
 
     percent_difference = np.full(fixed.shape, np.nan, dtype=np.float32)
     percent_difference[percent_mask] = (
         100.0
-        * (moving_norm[percent_mask] - fixed_norm[percent_mask])
-        / fixed_norm[percent_mask]
+        * (moving_compare[percent_mask] - fixed_compare[percent_mask])
+        / fixed_compare[percent_mask]
     )
     mean_absolute_percent_difference = float(
         np.mean(np.abs(percent_difference[percent_mask]))

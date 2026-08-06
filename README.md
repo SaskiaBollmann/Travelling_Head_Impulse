@@ -41,6 +41,37 @@ sbatch preprocess_b0_romeo.sh \
 Outputs are written under
 `derivatives/preprocessing/b0_romeo/<session>/<phase-basename>_romeo/`.
 ROMEO's `unwrapped.nii`, mask, and settings file are kept together there.
+The same directory also contains `fieldmap_hz.nii.gz` and
+`fieldmap_hz.json`. Frequency is calculated as unwrapped phase divided by
+`2*pi*DeltaTE`, with echo times read from each acquisition's JSON sidecars
+(including Berkeley's different DeltaTE).
+
+
+## Consistent cross-session comparison plots
+
+`plot_cross_session_comparison.py` is the single entry point for representative
+MP2RAGE, B1, and B0 comparisons. All modes use the same fixed / registered
+moving / difference layout and sagittal / coronal / axial views.
+
+```bash
+python3 plot_cross_session_comparison.py --modality mp2rage \\
+    --moving-session 260601_THS_ses02 --fixed-session 260602_THS_ses03 \\
+    --transform Rigid --region whole-brain
+
+python3 plot_cross_session_comparison.py --modality b1 \\
+    --moving-session 260601_THS_ses02 --fixed-session 260602_THS_ses03 \\
+    --transform Rigid
+
+python3 plot_cross_session_comparison.py --modality b0 \\
+    --moving-session 260601_THS_ses02 --fixed-session 260602_THS_ses03 \\
+    --transform Rigid
+```
+
+MP2RAGE and B1 show percent difference and MAPD. B1 uses physical B1+ values
+for the source panels. B0 shows signed frequency difference and RMSE in Hz;
+percent difference is intentionally unavailable. The optional
+`plot_cross_session_comparison_array.sh` launcher generates all MP2RAGE pairs.
+
 
 ## Realign EPI runs and calculate mean and tSNR
 

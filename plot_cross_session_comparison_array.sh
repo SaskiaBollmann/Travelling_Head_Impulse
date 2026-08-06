@@ -1,12 +1,12 @@
 #!/bin/bash
-#SBATCH --job-name=cross_session_pdiff
+#SBATCH --job-name=cross_session_compare
 #SBATCH --time=00:15:00
 #SBATCH --partition=owners
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=16GB
 #SBATCH --array=0-125
-#SBATCH -o /oak/stanford/groups/polimeni/saskia/data/THS_2026/derivatives/coregistration/logs/cross_session_pdiff_%A_%a.output
-#SBATCH -e /oak/stanford/groups/polimeni/saskia/data/THS_2026/derivatives/coregistration/logs/cross_session_pdiff_%A_%a.error
+#SBATCH -o /oak/stanford/groups/polimeni/saskia/data/THS_2026/derivatives/coregistration/logs/cross_session_compare_%A_%a.output
+#SBATCH -e /oak/stanford/groups/polimeni/saskia/data/THS_2026/derivatives/coregistration/logs/cross_session_compare_%A_%a.error
 
 set -euo pipefail
 
@@ -24,8 +24,8 @@ resolve_plot_script() {
         "${SLURM_SUBMIT_DIR:-}" \
         "/home/users/sasbo/code/Travelling_Head_Impulse"; do
         if [ -n "$candidate" ] &&
-           [ -f "${candidate}/plot_cross_session_percent_difference.py" ]; then
-            printf '%s\n' "${candidate}/plot_cross_session_percent_difference.py"
+           [ -f "${candidate}/plot_cross_session_comparison.py" ]; then
+            printf '%s\n' "${candidate}/plot_cross_session_comparison.py"
             return 0
         fi
     done
@@ -34,7 +34,7 @@ resolve_plot_script() {
 }
 
 PLOT_SCRIPT=$(resolve_plot_script) || {
-    echo "Error: Could not locate plot_cross_session_percent_difference.py." >&2
+    echo "Error: Could not locate plot_cross_session_comparison.py." >&2
     exit 1
 }
 PYTHON="/home/users/sasbo/miniconda3/bin/python3"
@@ -74,6 +74,8 @@ read -r TRANSFORM MOVING FIXED <<< "${COMBOS[$TASK_ID]}"
 echo "Transform=${TRANSFORM} moving=${MOVING} fixed=${FIXED}"
 
 "$PYTHON" "$PLOT_SCRIPT" \
+    --modality mp2rage \
+    --region both \
     --moving-session "$MOVING" \
     --fixed-session "$FIXED" \
     --transform "$TRANSFORM"

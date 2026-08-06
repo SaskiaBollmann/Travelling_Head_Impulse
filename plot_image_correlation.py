@@ -141,6 +141,18 @@ def metric_from_filename(filename, folder_name):
             "vmax": None,
         }
 
+    if filename.startswith("rmse_hz_matrix_") and filename.endswith(suffix):
+        transform_name = filename.replace("rmse_hz_matrix_", "").replace(suffix, "")
+        return {
+            "name": "RMSE (Hz)",
+            "title": "Cross-Session RMSE in Hz",
+            "transform": transform_name,
+            "fmt": ".1f",
+            "cmap": "magma",
+            "vmin": 0.0,
+            "vmax": None,
+        }
+
     if filename.startswith("mapd_matrix_") and filename.endswith(suffix):
         transform_name = filename.replace("mapd_matrix_", "").replace(suffix, "")
         return {
@@ -333,6 +345,7 @@ def main():
     for prefix in (
         "correlation_matrix_",
         "rmse_matrix_",
+        "rmse_hz_matrix_",
         "mapd_matrix_",
         "wm_mapd_matrix_",
     ):

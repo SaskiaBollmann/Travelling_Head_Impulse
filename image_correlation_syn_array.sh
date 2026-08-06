@@ -55,7 +55,7 @@ check_programs() {
 }
 
 print_usage() {
-    echo "Usage: sbatch image_correlation_syn_array.sh -r <reg_id> [-R reg_suffix] [-c corr_id] [-C corr_suffix] [-m] [-F|--force|--rerun]"
+    echo "Usage: sbatch image_correlation_syn_array.sh (-r <reg_id> | --afni-epi ep2d [--afni-corr mean|tsnr]) [-R reg_suffix] [-c corr_id] [-C corr_suffix] [-m] [-F|--force|--rerun]"
     echo "Legacy: sbatch image_correlation_syn_array.sh <identifier> [suffix]"
 }
 
@@ -73,6 +73,8 @@ require_value() {
 # 1. Parse command line arguments. Positional arguments are kept for older calls.
 MASK=false
 FORCE=false
+AFNI_EPI=""
+AFNI_CORR_METRIC="tsnr"
 if [[ "$#" -gt 0 && "$1" != -* ]]; then
     REG_ID="$1"
     shift
@@ -104,6 +106,16 @@ while [[ "$#" -gt 0 ]]; do
             CORR_SUFFIX="$2"
             shift 2
             ;;
+        --afni-epi)
+            require_value "$1" "${2:-}"
+            AFNI_EPI="${2,,}"
+            shift 2
+            ;;
+        --afni-corr)
+            require_value "$1" "${2:-}"
+            AFNI_CORR_METRIC="${2,,}"
+            shift 2
+            ;;
         -m|--mask)
             MASK=true
             shift
@@ -123,6 +135,21 @@ while [[ "$#" -gt 0 ]]; do
             ;;
     esac
 done
+
+if [ -n "$AFNI_EPI" ]; then
+    case "$AFNI_EPI" in
+        ep2d) ;;
+        *) echo "Error: --afni-epi currently supports ep2d." >&2; exit 2 ;;
+    esac
+    case "$AFNI_CORR_METRIC" in
+        mean|tsnr) ;;
+        *) echo "Error: --afni-corr must be mean or tsnr." >&2; exit 2 ;;
+    esac
+    REG_ID="${AFNI_EPI}_bold_mean"
+    CORR_ID="${AFNI_EPI}_bold_${AFNI_CORR_METRIC}"
+    REG_SUFFIX=""
+    CORR_SUFFIX=""
+fi
 
 if [ -z "$REG_ID" ]; then
     echo "Error: Registration ID (-r) is required."
@@ -191,6 +218,8 @@ fi
 [ "$MASK" = true ] && OUT_ID="${OUT_ID}_masked"
 
 BASE_DIR="/oak/stanford/groups/polimeni/saskia/data/THS_2026/orig"
+AFNI_EPI_ROOT="/oak/stanford/groups/polimeni/saskia/data/THS_2026/derivatives/preprocessing/realignment_afni"
+[ -n "$AFNI_EPI" ] && BASE_DIR="$AFNI_EPI_ROOT"
 DERIV_DIR="/oak/stanford/groups/polimeni/saskia/data/THS_2026/derivatives/coregistration"
 OUT_DIR="${DERIV_DIR}/${OUT_ID}"
 
@@ -300,6 +329,21 @@ find_matching_file() {
     find "$search_path" -maxdepth 1 -type f 2>/dev/null | sort | grep -E "$fallback_regex" | head -n 1
 }
 
+find_afni_epi_file() {
+    local session=$1 metric=$2
+    local session_dir="${AFNI_EPI_ROOT}/${session}"
+    local matches count
+    matches=$(find "$session_dir" -mindepth 2 -maxdepth 2 -type f 2>/dev/null |
+        sort | grep -E "/${AFNI_EPI}_bold.*_afni/${AFNI_EPI}_bold.*_${metric}\.nii(\.gz)?$" || true)
+    count=$(printf '%s\n' "$matches" | sed '/^$/d' | wc -l)
+    if [ "$count" -gt 1 ]; then
+        echo "Error: Multiple ${AFNI_EPI} ${metric} images found for ${session}." >&2
+        printf '%s\n' "$matches" >&2
+        return 2
+    fi
+    [ -n "$matches" ] && printf '%s\n' "$matches"
+}
+
 REG_REGEX=$(build_regex "$REG_ID" "$REG_SUFFIX")
 CORR_REGEX=$(build_regex "$CORR_ID" "$CORR_SUFFIX")
 
@@ -336,10 +380,17 @@ if [ "$FORCE" = true ]; then
 fi
 
 # 5. Dynamically locate the registration and correlation/RMSE images.
-MOVING_REG=$(find_matching_file "${BASE_DIR}/${MOV_SES}" "$REG_ID" "$REG_SUFFIX" "$MOV_SES" "$REG_REGEX")
-FIXED_REG=$(find_matching_file "${BASE_DIR}/${FIX_SES}" "$REG_ID" "$REG_SUFFIX" "$FIX_SES" "$REG_REGEX")
-MOVING_CORR=$(find_matching_file "${BASE_DIR}/${MOV_SES}" "$CORR_ID" "$CORR_SUFFIX" "$MOV_SES" "$CORR_REGEX")
-FIXED_CORR=$(find_matching_file "${BASE_DIR}/${FIX_SES}" "$CORR_ID" "$CORR_SUFFIX" "$FIX_SES" "$CORR_REGEX")
+if [ -n "$AFNI_EPI" ]; then
+    MOVING_REG=$(find_afni_epi_file "$MOV_SES" mean)
+    FIXED_REG=$(find_afni_epi_file "$FIX_SES" mean)
+    MOVING_CORR=$(find_afni_epi_file "$MOV_SES" "$AFNI_CORR_METRIC")
+    FIXED_CORR=$(find_afni_epi_file "$FIX_SES" "$AFNI_CORR_METRIC")
+else
+    MOVING_REG=$(find_matching_file "${BASE_DIR}/${MOV_SES}" "$REG_ID" "$REG_SUFFIX" "$MOV_SES" "$REG_REGEX")
+    FIXED_REG=$(find_matching_file "${BASE_DIR}/${FIX_SES}" "$REG_ID" "$REG_SUFFIX" "$FIX_SES" "$REG_REGEX")
+    MOVING_CORR=$(find_matching_file "${BASE_DIR}/${MOV_SES}" "$CORR_ID" "$CORR_SUFFIX" "$MOV_SES" "$CORR_REGEX")
+    FIXED_CORR=$(find_matching_file "${BASE_DIR}/${FIX_SES}" "$CORR_ID" "$CORR_SUFFIX" "$FIX_SES" "$CORR_REGEX")
+fi
 PAIR_PROVENANCE="${OUT_DIR}/provenance_SyN_${i}_${j}.tsv"
 PAIR_STATUS="ready"
 if [[ -z "$MOVING_REG" || -z "$FIXED_REG" || -z "$MOVING_CORR" || -z "$FIXED_CORR" ]]; then

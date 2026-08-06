@@ -68,13 +68,17 @@ check_programs() {
 
 # 1. Parse Command Line Arguments
 print_usage() {
-    echo "Usage: sbatch image_correlation_fast.sh -r <reg_id> [-R reg_suffix] [-c corr_id] [-C corr_suffix] [--corr-romeo standard|nd] [-m] [-t rigid|affine|both] [-F|--force|--rerun]"
+    echo "Usage: sbatch image_correlation_fast.sh (-r <reg_id> | --afni-epi ep2d [--afni-corr mean|tsnr]) [-R reg_suffix] [-c corr_id] [-C corr_suffix] [--corr-romeo standard|nd] [-m] [-t rigid|affine|both] [--physical-values] [--recompute-metrics] [-F|--force|--rerun]"
 }
 
 MASK=false
 FORCE=false
+PHYSICAL_VALUES=false
+RECOMPUTE_METRICS=false
 TRANSFORM_MODE="both"
 ROMEO_FAMILY=""
+AFNI_EPI=""
+AFNI_CORR_METRIC="tsnr"
 while [[ "$#" -gt 0 ]]; do
     case $1 in
         -r|--reg-id) REG_ID="$2"; shift ;;
@@ -82,14 +86,33 @@ while [[ "$#" -gt 0 ]]; do
         -c|--corr-id) CORR_ID="$2"; shift ;;
         -C|--corr-suffix) CORR_SUFFIX="$2"; shift ;;
         --corr-romeo) ROMEO_FAMILY="${2,,}"; shift ;;
+        --afni-epi) AFNI_EPI="${2,,}"; shift ;;
+        --afni-corr) AFNI_CORR_METRIC="${2,,}"; shift ;;
         -m|--mask) MASK=true ;;
         -t|--transform) TRANSFORM_MODE="$2"; shift ;;
+        --physical-values) PHYSICAL_VALUES=true ;;
+        --recompute-metrics) RECOMPUTE_METRICS=true ;;
         -F|--force|--rerun) FORCE=true ;;
         -h|--help) print_usage; exit 0 ;;
         *) echo "Unknown parameter passed: $1"; print_usage; exit 1 ;;
     esac
     shift
 done
+
+if [ -n "$AFNI_EPI" ]; then
+    case "$AFNI_EPI" in
+        ep2d) ;;
+        *) echo "Error: --afni-epi currently supports ep2d." >&2; exit 2 ;;
+    esac
+    case "$AFNI_CORR_METRIC" in
+        mean|tsnr) ;;
+        *) echo "Error: --afni-corr must be mean or tsnr." >&2; exit 2 ;;
+    esac
+    REG_ID="${AFNI_EPI}_bold_mean"
+    CORR_ID="${AFNI_EPI}_bold_${AFNI_CORR_METRIC}"
+    REG_SUFFIX=""
+    CORR_SUFFIX=""
+fi
 
 if [ -z "$REG_ID" ]; then
     echo "Error: Registration ID (-r) is required."
@@ -191,6 +214,8 @@ fi
 [ "$MASK" = true ] && OUT_ID="${OUT_ID}_masked"
 
 BASE_DIR="/oak/stanford/groups/polimeni/saskia/data/THS_2026/orig"
+AFNI_EPI_ROOT="/oak/stanford/groups/polimeni/saskia/data/THS_2026/derivatives/preprocessing/realignment_afni"
+[ -n "$AFNI_EPI" ] && BASE_DIR="$AFNI_EPI_ROOT"
 ROMEO_ROOT="/oak/stanford/groups/polimeni/saskia/data/THS_2026/derivatives/preprocessing/b0_romeo"
 DERIV_DIR="/oak/stanford/groups/polimeni/saskia/data/THS_2026/derivatives/coregistration"
 OUT_DIR="${DERIV_DIR}/${OUT_ID}"
@@ -311,6 +336,21 @@ find_romeo_file() {
     [ -n "$match" ] && printf '%s\n' "$match"
 }
 
+find_afni_epi_file() {
+    local session=$1 metric=$2
+    local session_dir="${AFNI_EPI_ROOT}/${session}"
+    local matches count
+    matches=$(find "$session_dir" -mindepth 2 -maxdepth 2 -type f 2>/dev/null |
+        sort | grep -E "/${AFNI_EPI}_bold.*_afni/${AFNI_EPI}_bold.*_${metric}\.nii(\.gz)?$" || true)
+    count=$(printf '%s\n' "$matches" | sed '/^$/d' | wc -l)
+    if [ "$count" -gt 1 ]; then
+        echo "Error: Multiple ${AFNI_EPI} ${metric} images found for ${session}." >&2
+        printf '%s\n' "$matches" >&2
+        return 2
+    fi
+    [ -n "$matches" ] && printf '%s\n' "$matches"
+}
+
 REG_REGEX=$(build_regex "$REG_ID" "$REG_SUFFIX")
 CORR_REGEX=$(build_regex "$CORR_ID" "$CORR_SUFFIX")
 
@@ -329,10 +369,15 @@ for (( ses_idx=0; ses_idx<NUM_SES; ses_idx++ )); do
     C_FILE=""
 
     if [ -d "$search_path" ]; then
-        R_FILE=$(find_matching_file "$search_path" "$REG_ID" "$REG_SUFFIX" "$ses" "$REG_REGEX")
-        if [ -n "$ROMEO_FAMILY" ]; then
-            C_FILE=$(find_romeo_file "$ses" "$ROMEO_FAMILY")
+        if [ -n "$AFNI_EPI" ]; then
+            R_FILE=$(find_afni_epi_file "$ses" mean)
+            C_FILE=$(find_afni_epi_file "$ses" "$AFNI_CORR_METRIC")
         else
+            R_FILE=$(find_matching_file "$search_path" "$REG_ID" "$REG_SUFFIX" "$ses" "$REG_REGEX")
+        fi
+        if [ -z "$AFNI_EPI" ] && [ -n "$ROMEO_FAMILY" ]; then
+            C_FILE=$(find_romeo_file "$ses" "$ROMEO_FAMILY")
+        elif [ -z "$AFNI_EPI" ]; then
             C_FILE=$(find_matching_file "$search_path" "$CORR_ID" "$CORR_SUFFIX" "$ses" "$CORR_REGEX")
         fi
     fi
@@ -372,6 +417,8 @@ if [ "$FORCE" = true ]; then
 else
     echo "Resume mode: enabled. Existing pair metric files and transform outputs will be reused."
 fi
+[ "$PHYSICAL_VALUES" = true ] && echo "Percent difference: physical input values (no normalization)."
+[ "$RECOMPUTE_METRICS" = true ] && echo "Metric refresh: enabled; existing transforms and warped images will be reused."
 
 TOTAL_PAIRS=$((NUM_SES * NUM_SES))
 
@@ -473,7 +520,7 @@ for (( t=0; t<${#TRANSFORM_FLAGS[@]}; t++ )); do
 
             if [ "$FORCE" = true ]; then
                 rm -f "${OUT_PREFIX}"* "$TEMP_CORR" "$TEMP_RMSE" "$TEMP_MAPD"
-            elif [[ -s "$TEMP_CORR" && -s "$TEMP_RMSE" && -s "$TEMP_MAPD" && -s "$PERCENT_DIFF" ]]; then
+            elif [ "$RECOMPUTE_METRICS" = false ] && [[ -s "$TEMP_CORR" && -s "$TEMP_RMSE" && -s "$TEMP_MAPD" && -s "$PERCENT_DIFF" ]]; then
                 CORR=$(<"$TEMP_CORR")
                 RMSE=$(<"$TEMP_RMSE")
                 MAPD=$(<"$TEMP_MAPD")
@@ -545,9 +592,7 @@ for (( t=0; t<${#TRANSFORM_FLAGS[@]}; t++ )); do
                 fi
                 rm "$TMP_SQR" 2>/dev/null
 
-                # 4c. Compute the normalized percent-difference image and its
-                # mean absolute value using the same definition as the
-                # TrueForm/patient-specific comparison.
+                # 4c. Compute the percent-difference image and its mean absolute value.
                 echo "      Computing percent-difference image..."
                 PERCENT_DIFF_ARGS=(
                     --fixed "${CORR_FILES[$j]}"
@@ -557,6 +602,9 @@ for (( t=0; t<${#TRANSFORM_FLAGS[@]}; t++ )); do
                 )
                 if [ "$MASK" = true ]; then
                     PERCENT_DIFF_ARGS+=(--mask "$MASK_FILE")
+                fi
+                if [ "$PHYSICAL_VALUES" = true ]; then
+                    PERCENT_DIFF_ARGS+=(--physical-values)
                 fi
                 if env -u PYTHONPATH -u PYTHONHOME "$PERCENT_DIFF_PYTHON" \
                     "$PERCENT_DIFF_SCRIPT" "${PERCENT_DIFF_ARGS[@]}"; then

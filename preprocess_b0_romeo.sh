@@ -11,6 +11,9 @@ set -euo pipefail
 
 BASE_DIR="/oak/stanford/groups/polimeni/saskia/data/THS_2026/orig"
 OUT_ROOT="/oak/stanford/groups/polimeni/saskia/data/THS_2026/derivatives/preprocessing/b0_romeo"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HZ_CONVERTER="${SCRIPT_DIR}/convert_b0_phase_to_hz.py"
+PYTHON="/home/users/sasbo/miniconda3/bin/python3"
 FAMILY="both"
 FORCE=false
 DRY_RUN=false
@@ -38,7 +41,7 @@ Options:
   -f, --family NAME        standard, nd, or both (default: both).
   -i, --input-root DIR     Root containing the session directories.
   -o, --output-root DIR    Derivative output root.
-  -F, --force              Overwrite an existing unwrapped image.
+  -F, --force              Overwrite existing unwrapped and Hz images.
   -n, --dry-run            Print inputs and commands without running ROMEO.
   -h, --help               Show this help.
 
@@ -49,9 +52,12 @@ Examples:
 
 Output:
   <output-root>/<session>/<phase-basename>_romeo/unwrapped.nii
+  <output-root>/<session>/<phase-basename>_romeo/fieldmap_hz.nii.gz
 
 Note: *_e1 is magnitude and is not itself unwrapped. The wrapped phase is
 *_e2_ph. ROMEO rescales the stored Siemens phase values to [-pi, pi].
+The unwrapped phase difference is divided by 2*pi*DeltaTE to obtain Hz;
+DeltaTE is read separately for every acquisition from its JSON sidecars.
 EOF
 }
 
@@ -95,6 +101,8 @@ if [ "$DRY_RUN" = false ]; then
         echo "Error: ROMEO was not found after loading romeo/3.2.8." >&2
         exit 1
     }
+    [ -x "$PYTHON" ] || { echo "Error: Python not found: ${PYTHON}" >&2; exit 1; }
+    [ -f "$HZ_CONVERTER" ] || { echo "Error: Hz converter not found: ${HZ_CONVERTER}" >&2; exit 1; }
 fi
 
 find_one() {
@@ -122,11 +130,17 @@ strip_nii_extension() {
     printf '%s\n' "${name%.nii}"
 }
 
+sidecar_path() {
+    local path=$1
+    path=${path%.gz}
+    printf '%s.json\n' "${path%.nii}"
+}
+
 process_family() {
     local session=$1 family=$2
     local session_dir="${BASE_DIR}/${session}"
-    local phase_regex magnitude_regex phase magnitude session_out_dir
-    local romeo_out_dir output
+    local phase_regex magnitude_regex phase magnitude phase_json magnitude_json
+    local session_out_dir romeo_out_dir output hz_output hz_json sidecar
 
     if [ "$family" = "nd" ]; then
         phase_regex='gre_b0map_4iso_sag_ND_[0-9]+_e2_ph\.nii(\.gz)?'
@@ -153,30 +167,57 @@ process_family() {
     session_out_dir="${OUT_ROOT}/${session}"
     romeo_out_dir="${session_out_dir}/$(strip_nii_extension "$phase")_romeo"
     output="${romeo_out_dir}/unwrapped.nii"
+    hz_output="${romeo_out_dir}/fieldmap_hz.nii.gz"
+    hz_json="${romeo_out_dir}/fieldmap_hz.json"
+    phase_json=$(sidecar_path "$phase")
+    magnitude_json=$(sidecar_path "$magnitude")
 
-    if [ -f "$output" ] && [ "$FORCE" = false ]; then
-        echo "[Exists] ${output}; skipping (use --force to overwrite)."
-        return
-    fi
+    for sidecar in "$phase_json" "$magnitude_json"; do
+        [ -f "$sidecar" ] || {
+            echo "Error: Missing JSON sidecar: ${sidecar}" >&2
+            return 1
+        }
+    done
+
 
     echo "[Ready] ${session} (${family})"
     echo "  phase:     ${phase}"
     echo "  magnitude: ${magnitude}"
     echo "  output:    ${output}"
+    echo "  Hz output: ${hz_output}"
 
     if [ "$DRY_RUN" = true ]; then
-        printf '  command:   romeo -p %q -m %q -k robustmask -u -o %q\n' \
-            "$phase" "$magnitude" "$romeo_out_dir"
+        if [ ! -f "$output" ] || [ "$FORCE" = true ]; then
+            printf '  command:   romeo -p %q -m %q -k robustmask -u -o %q\n' \
+                "$phase" "$magnitude" "$romeo_out_dir"
+        fi
+        printf '  command:   %q %q --unwrapped %q --echo1-json %q --echo2-json %q --output %q --output-json %q\n' \
+            "$PYTHON" "$HZ_CONVERTER" "$output" "$magnitude_json" \
+            "$phase_json" "$hz_output" "$hz_json"
         return
     fi
 
     mkdir -p "$session_out_dir"
-    romeo -p "$phase" -m "$magnitude" -k robustmask -u -o "$romeo_out_dir"
+    if [ ! -f "$output" ] || [ "$FORCE" = true ]; then
+        romeo -p "$phase" -m "$magnitude" -k robustmask -u -o "$romeo_out_dir"
+    else
+        echo "[Exists] ${output}; reusing unwrapped phase."
+    fi
     [ -f "$output" ] || {
         echo "Error: ROMEO completed without creating ${output}." >&2
         return 1
     }
-    echo "[Done] ${output}"
+    if [ ! -f "$hz_output" ] || [ "$FORCE" = true ]; then
+        "$PYTHON" "$HZ_CONVERTER" \
+            --unwrapped "$output" \
+            --echo1-json "$magnitude_json" \
+            --echo2-json "$phase_json" \
+            --output "$hz_output" \
+            --output-json "$hz_json"
+    else
+        echo "[Exists] ${hz_output}; skipping (use --force to overwrite)."
+    fi
+    echo "[Done] ${output} and ${hz_output}"
 }
 
 case "$FAMILY" in
