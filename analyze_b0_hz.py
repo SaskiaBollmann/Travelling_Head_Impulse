@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 
-"""Build rigid/affine cross-session B0 correlation and RMSE results in Hz."""
+"""Resample B0 maps into pairwise spaces and compute correlation and RMSE in Hz."""
 
 import argparse
 import csv
 import json
 import math
 import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 
 import nibabel as nib
@@ -80,9 +82,40 @@ def save_image(data, reference, path, description):
     )
 
 
+def copy_if_different(source, destination):
+    if source.resolve() != destination.resolve():
+        shutil.copy2(source, destination)
+
+
+def apply_transform(
+    input_path, reference_path, transform_path, output_path, interpolation
+):
+    subprocess.run(
+        [
+            "antsApplyTransforms",
+            "-d",
+            "3",
+            "-i",
+            str(input_path),
+            "-r",
+            str(reference_path),
+            "-o",
+            str(output_path),
+            "-n",
+            interpolation,
+            "-t",
+            str(transform_path),
+        ],
+        check=True,
+    )
+
 
 def main():
     args = parse_args()
+    if shutil.which("antsApplyTransforms") is None:
+        raise SystemExit(
+            "antsApplyTransforms is required. Load the ANTs module before running."
+        )
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     hz_paths = {
@@ -112,7 +145,7 @@ def main():
         source_mask = args.source_registration_dir / f"mask_{session}.nii.gz"
         if not source_mask.is_file():
             raise SystemExit(f"Missing registration mask: {source_mask}")
-        shutil.copy2(source_mask, args.output_dir / source_mask.name)
+        copy_if_different(source_mask, args.output_dir / source_mask.name)
 
     for transform in TRANSFORMS:
         correlation = np.full((len(SESSIONS), len(SESSIONS)), np.nan)
@@ -124,29 +157,49 @@ def main():
                 stem = (
                     f"reg_{transform}_mov_{moving_session}_to_fix_{fixed_session}"
                 )
-                source_warped = (
-                    args.source_registration_dir / f"{stem}_CORR_Warped.nii.gz"
-                )
                 source_transform = (
                     args.source_registration_dir / f"{stem}_0GenericAffine.mat"
                 )
                 source_mask = (
                     args.source_registration_dir / f"mask_{fixed_session}.nii.gz"
                 )
-                for required in (source_warped, source_transform, source_mask):
+                for required in (source_transform, source_mask):
                     if not required.is_file():
                         raise SystemExit(f"Missing required registration file: {required}")
 
-                warped_image, warped_phase = load_data(source_warped)
                 mask_image, mask = load_data(source_mask)
                 fixed_image = hz_images[fixed_session]
                 fixed_hz = hz_data[fixed_session]
                 fixed_romeo_mask = romeo_masks[fixed_session]
-                moving_hz = warped_phase * scales[moving_session]
+                moving_romeo_mask_path = hz_paths[moving_session].with_name(
+                    "mask.nii"
+                )
+
+                with tempfile.TemporaryDirectory(prefix="analyze_b0_hz_") as temp_dir:
+                    temp_dir = Path(temp_dir)
+                    warped_hz_path = temp_dir / "moving_hz.nii.gz"
+                    warped_mask_path = temp_dir / "moving_romeo_mask.nii.gz"
+                    apply_transform(
+                        hz_paths[moving_session],
+                        hz_paths[fixed_session],
+                        source_transform,
+                        warped_hz_path,
+                        "Linear",
+                    )
+                    apply_transform(
+                        moving_romeo_mask_path,
+                        hz_paths[fixed_session],
+                        source_transform,
+                        warped_mask_path,
+                        "NearestNeighbor",
+                    )
+                    warped_image, moving_hz = load_data(warped_hz_path)
+                    _, moving_romeo_mask = load_data(warped_mask_path)
 
                 if (
                     fixed_hz.shape != moving_hz.shape
                     or fixed_hz.shape != mask.shape
+                    or fixed_hz.shape != moving_romeo_mask.shape
                     or not np.allclose(fixed_image.affine, warped_image.affine)
                     or not np.allclose(fixed_image.affine, mask_image.affine)
                 ):
@@ -155,6 +208,7 @@ def main():
                 valid = (
                     (mask > 0)
                     & (fixed_romeo_mask > 0)
+                    & (moving_romeo_mask > 0)
                     & np.isfinite(fixed_hz)
                     & np.isfinite(moving_hz)
                 )
@@ -177,17 +231,17 @@ def main():
                 difference[valid] = moving_hz[valid] - fixed_hz[valid]
                 save_image(
                     registered,
-                    warped_image,
+                    fixed_image,
                     args.output_dir / f"{stem}_HZ_Warped.nii.gz",
                     "Registered B0 frequency offset (Hz)",
                 )
                 save_image(
                     difference,
-                    warped_image,
+                    fixed_image,
                     args.output_dir / f"{stem}_DIFF_HZ.nii.gz",
                     "B0 moving minus fixed (Hz)",
                 )
-                shutil.copy2(
+                copy_if_different(
                     source_transform, args.output_dir / source_transform.name
                 )
                 provenance_rows.append(
@@ -197,7 +251,8 @@ def main():
                         "fixed_session": fixed_session,
                         "moving_hz_source": hz_paths[moving_session],
                         "fixed_hz_source": hz_paths[fixed_session],
-                        "registered_phase_source": source_warped,
+                        "transform_source": source_transform,
+                        "moving_romeo_mask_source": moving_romeo_mask_path,
                         "moving_hz_metadata": metadata_paths[moving_session],
                         "moving_hz_per_radian": f"{scales[moving_session]:.9f}",
                         "mask": source_mask,

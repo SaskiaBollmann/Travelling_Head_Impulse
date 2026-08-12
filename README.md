@@ -207,17 +207,16 @@ python3 compute_wm_mapd.py \
 
 ## Cross-session B0 comparison in Hz
 
-`analyze_b0_hz.py` takes the Rigid/Affine registrations already computed by
-`image_correlation_fast.sh` on the ROMEO-unwrapped phase (registered in
-radians) and rescales each moving image back to Hz using its own
-`EchoTimeDifference`, since B0 offset scales differ by session/site. It then
-recomputes correlation and RMSE directly in Hz (rather than on the arbitrary
-registered phase units) and writes registered/difference Hz images alongside
-the standard matrix and provenance files.
+`analyze_b0_hz.py` applies the saved Rigid/Affine transforms directly to each
+B0 field map in Hz and resamples each moving ROMEO validity mask alongside it.
+The common comparison mask is the registration brain mask intersected with both
+ROMEO masks, so legitimate 0 Hz values remain included while transformed
+background stays excluded. It writes registered/difference Hz images alongside
+the standard correlation, RMSE, and provenance files.
 
 ```bash
 python3 analyze_b0_hz.py \
-    --source-registration-dir /oak/.../coregistration/reg-gre_b0map_4iso_sag_ND_e1__corr-gre_b0map_4iso_sag_ND_romeo_unwrapped_masked \
+    --source-registration-dir /oak/.../coregistration/reg-gre_b0map_4iso_sag_ND_e1__corr-gre_b0map_4iso_sag_ND_romeo_hz_masked \
     --b0-root /oak/.../derivatives/preprocessing/b0_romeo \
     --output-dir /oak/.../coregistration/reg-gre_b0map_4iso_sag_ND_e1__corr-gre_b0map_4iso_sag_ND_romeo_hz_masked
 ```
