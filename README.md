@@ -225,7 +225,7 @@ python3 analyze_b0_hz.py \
 ## Consistent cross-session comparison plots
 
 `plot_cross_session_comparison.py` is the single entry point for representative
-MP2RAGE, B1, and B0 comparisons. All modes use the same fixed / registered
+MP2RAGE, B1, B0, and tSNR comparisons. All modes use the same fixed / registered
 moving / difference layout and sagittal / coronal / axial views.
 
 ```bash
@@ -240,14 +240,22 @@ python3 plot_cross_session_comparison.py --modality b1 \
 python3 plot_cross_session_comparison.py --modality b0 \
     --moving-session 260601_THS_ses02 --fixed-session 260602_THS_ses03 \
     --transform Rigid
+
+python3 plot_cross_session_comparison.py --modality tsnr \
+    --moving-session 260601_THS_ses02 --fixed-session 260602_THS_ses03 \
+    --transform Rigid
 ```
 
-MP2RAGE and B1 show percent difference and MAPD. B1 uses physical B1+ values
-for the source panels. B0 shows signed frequency difference and RMSE in Hz;
-percent difference is intentionally unavailable. The optional
-`plot_cross_session_comparison_array.sh` launcher is a 126-task Slurm array
-that generates every ordered (moving, fixed) MP2RAGE pair for all three
-transforms.
+MP2RAGE, B1, and tSNR show percent difference and MAPD; B1 and tSNR use
+their physical (non-percentile-scaled) values for the source panels, reading
+the raw source images from the underlying registration's provenance TSV
+(`reg-ep2d_bold_mean__corr-ep2d_bold_tsnr_masked`, produced by
+`image_correlation_fast.sh --afni-epi ep2d --afni-corr tsnr` and/or
+`image_correlation_syn_array.sh --afni-epi ep2d --afni-corr tsnr`). B0 shows
+signed frequency difference and RMSE in Hz; percent difference is
+intentionally unavailable. The optional `plot_cross_session_comparison_array.sh`
+launcher is a 126-task Slurm array that generates every ordered (moving,
+fixed) MP2RAGE pair for all three transforms.
 
 ## Voxel time-series and FFT spectrograms
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-"""Consistent representative cross-session plots for MP2RAGE, B1, and B0."""
+"""Consistent representative cross-session plots for MP2RAGE, B1, B0, and tSNR."""
 
 import argparse
 import csv
@@ -73,6 +73,8 @@ B0_ID = (
     "gre_b0map_4iso_sag_ND_romeo_hz_masked"
 )
 B0_DIR = COREG_ROOT / B0_ID
+TSNR_ID = "reg-ep2d_bold_mean__corr-ep2d_bold_tsnr_masked"
+TSNR_DIR = COREG_ROOT / TSNR_ID
 
 SESSIONS = (
     "260529_THS_ses01",
@@ -83,8 +85,8 @@ SESSIONS = (
     "260618_THS_ses06",
     "260618_THS_ses07",
 )
-SAGITTAL_OFFSET_FROM_MIDLINE = 20
-DEFAULT_DIFFERENCE_LIMITS = {"mp2rage": 20.0, "b1": 50.0, "b0": 100.0}
+SAGITTAL_OFFSET_MM = 14.0
+DEFAULT_DIFFERENCE_LIMITS = {"mp2rage": 20.0, "b1": 50.0, "b0": 100.0, "tsnr": 50.0}
 DEFAULT_B0_IMAGE_LIMIT_HZ = 600.0
 
 
@@ -92,12 +94,12 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description=(
             "Plot fixed, registered-moving, and difference images in one "
-            "consistent layout for MP2RAGE, B1, or B0."
+            "consistent layout for MP2RAGE, B1, B0, or tSNR."
         )
     )
     parser.add_argument(
         "--modality",
-        choices=("mp2rage", "b1", "b0"),
+        choices=("mp2rage", "b1", "b0", "tsnr"),
         default="mp2rage",
     )
     parser.add_argument("--moving-session", choices=SESSIONS, default=SESSIONS[1])
@@ -109,7 +111,7 @@ def parse_args():
         "--region",
         choices=("whole-brain", "wm", "both"),
         default="whole-brain",
-        help="MP2RAGE only; B0 and B1 use whole-brain.",
+        help="MP2RAGE only; B0, B1, and tSNR use whole-brain.",
     )
     parser.add_argument(
         "--difference-limit",
@@ -152,10 +154,16 @@ def robust_normalize(data, mask):
     return np.clip((data - low) / (high - low), 0, 1)
 
 
-def best_slices(mask):
+def best_slices(mask, voxel_sizes):
     midline = int(np.argmax(mask.sum(axis=(1, 2))))
+    sagittal_offset = max(1, int(round(SAGITTAL_OFFSET_MM / voxel_sizes[0])))
+    sagittal_target = min(midline + sagittal_offset, mask.shape[0] - 1)
+    valid_sagittal = np.flatnonzero(mask.sum(axis=(1, 2)) > 0)
+    sagittal = int(
+        valid_sagittal[np.argmin(np.abs(valid_sagittal - sagittal_target))]
+    )
     return (
-        min(midline + SAGITTAL_OFFSET_FROM_MIDLINE, mask.shape[0] - 1),
+        sagittal,
         int(np.argmax(mask.sum(axis=(0, 2)))),
         int(np.argmax(mask.sum(axis=(0, 1)))),
     )
@@ -189,16 +197,24 @@ def patient_specific_path(session):
     return matches[0]
 
 
-def b1_source(transform, session):
-    provenance = B1_DIR / f"correlation_matrix_{transform}_{B1_ID}_provenance.tsv"
+def correlation_provenance_source(directory, dataset_id, transform, session, label):
+    provenance = directory / f"correlation_matrix_{transform}_{dataset_id}_provenance.tsv"
     with provenance.open(newline="", encoding="utf-8") as stream:
         rows = list(csv.DictReader(stream, delimiter="\t"))
     matches = [row["correlation_file"] for row in rows if row["session"] == session]
     if len(matches) != 1 or not matches[0]:
         raise SystemExit(
-            f"Expected one B1 correlation source for {session}; found {len(matches)}."
+            f"Expected one {label} correlation source for {session}; found {len(matches)}."
         )
     return Path(matches[0])
+
+
+def b1_source(transform, session):
+    return correlation_provenance_source(B1_DIR, B1_ID, transform, session, "B1")
+
+
+def tsnr_source(transform, session):
+    return correlation_provenance_source(TSNR_DIR, TSNR_ID, transform, session, "tSNR")
 
 
 def b0_source(session):
@@ -232,10 +248,11 @@ def load_comparison(args):
         mask_path = result_dir / f"mask_{fixed_session}.nii.gz"
         wm_path = WM_ROOT / fixed_session / "wm_mask_fast_pve95.nii.gz"
         require_files((fixed_path, moving_path, difference_path, mask_path, wm_path))
-    elif args.modality == "b1":
-        result_dir = B1_DIR
+    elif args.modality in ("b1", "tsnr"):
+        result_dir = B1_DIR if args.modality == "b1" else TSNR_DIR
+        source_fn = b1_source if args.modality == "b1" else tsnr_source
         prefix = result_dir / f"reg_{transform}_mov_{moving_session}_to_fix_{fixed_session}_"
-        fixed_path = b1_source(transform, fixed_session)
+        fixed_path = source_fn(transform, fixed_session)
         moving_path = Path(f"{prefix}CORR_Warped.nii.gz")
         difference_path = Path(f"{prefix}PERCENT_DIFF.nii.gz")
         mask_path = result_dir / f"mask_{fixed_session}.nii.gz"
@@ -263,13 +280,9 @@ def load_comparison(args):
         images.append(wm_image)
     check_grids(fixed_image, fixed, images)
 
-    brain_mask = (
-        (mask_data > 0)
-        & np.isfinite(fixed)
-        & np.isfinite(moving)
-        & (fixed != 0)
-        & (moving != 0)
-    )
+    brain_mask = (mask_data > 0) & np.isfinite(fixed) & np.isfinite(moving)
+    if args.modality != "b0":
+        brain_mask &= (fixed != 0) & (moving != 0)
     valid = brain_mask & np.isfinite(difference)
     if np.count_nonzero(valid) < 100:
         raise SystemExit("The common comparison mask is empty.")
@@ -284,6 +297,7 @@ def load_comparison(args):
         "brain_mask": brain_mask,
         "valid": valid,
         "wm_data": wm_data,
+        "voxel_sizes": nib.affines.voxel_sizes(fixed_image.affine),
     }
 
 
@@ -318,9 +332,25 @@ def prepare_panel(args, loaded, region):
         )
         colorbar_label = "Percent difference relative to fixed (%)"
         filename_metric = "percent_difference"
-    elif args.modality == "b1":
-        fixed_panel = fixed / 10.0
-        moving_panel = moving / 10.0
+    elif args.modality in ("b1", "tsnr"):
+        if args.modality == "b1":
+            fixed_panel = fixed / 10.0
+            moving_panel = moving / 10.0
+            modality_title = "B1+ transmit field"
+            column_titles = (
+                "Fixed B1+ map\n(% nominal; common display scale)",
+                "Moving B1+ map, registered to fixed\n(% nominal; common display scale)",
+                "Percent difference\nrelative to fixed (%)",
+            )
+        else:
+            fixed_panel = fixed
+            moving_panel = moving
+            modality_title = "EPI tSNR"
+            column_titles = (
+                "Fixed tSNR map\n(common display scale)",
+                "Moving tSNR map, registered to fixed\n(common display scale)",
+                "Percent difference\nrelative to fixed (%)",
+            )
         display_values = np.concatenate(
             (fixed_panel[brain_mask], moving_panel[brain_mask])
         )
@@ -330,12 +360,6 @@ def prepare_panel(args, loaded, region):
         metric_value = float(np.mean(np.abs(difference[comparison_mask])))
         metric_text = f"MAPD = {metric_value:.1f}%"
         region_label = "whole-brain"
-        modality_title = "B1+ transmit field"
-        column_titles = (
-            "Fixed B1+ map\n(% nominal; common display scale)",
-            "Moving B1+ map, registered to fixed\n(% nominal; common display scale)",
-            "Percent difference\nrelative to fixed (%)",
-        )
         colorbar_label = "Percent difference relative to fixed (%)"
         filename_metric = "percent_difference"
     else:
@@ -387,7 +411,7 @@ def prepare_panel(args, loaded, region):
 
 
 def render(args, loaded, panel, region):
-    slices = best_slices(panel["mask"])
+    slices = best_slices(panel["mask"], loaded["voxel_sizes"])
     gray = plt.get_cmap("gray").copy()
     gray.set_bad("black")
     diverging = plt.get_cmap("RdBu_r").copy()

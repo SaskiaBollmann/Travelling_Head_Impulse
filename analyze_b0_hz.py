@@ -90,10 +90,20 @@ def main():
     }
     hz_images = {}
     hz_data = {}
+    romeo_masks = {}
     scales = {}
     metadata_paths = {}
     for session in SESSIONS:
         hz_images[session], hz_data[session] = load_data(hz_paths[session])
+        romeo_mask_path = hz_paths[session].with_name("mask.nii")
+        if not romeo_mask_path.is_file():
+            raise SystemExit(f"Missing ROMEO mask: {romeo_mask_path}")
+        romeo_mask_image, romeo_masks[session] = load_data(romeo_mask_path)
+        if (
+            hz_data[session].shape != romeo_masks[session].shape
+            or not np.allclose(hz_images[session].affine, romeo_mask_image.affine)
+        ):
+            raise SystemExit(f"Grid mismatch for ROMEO mask: {romeo_mask_path}")
         scales[session], metadata_paths[session] = scale_from_metadata(
             hz_paths[session]
         )
@@ -131,6 +141,7 @@ def main():
                 mask_image, mask = load_data(source_mask)
                 fixed_image = hz_images[fixed_session]
                 fixed_hz = hz_data[fixed_session]
+                fixed_romeo_mask = romeo_masks[fixed_session]
                 moving_hz = warped_phase * scales[moving_session]
 
                 if (
@@ -143,10 +154,9 @@ def main():
 
                 valid = (
                     (mask > 0)
+                    & (fixed_romeo_mask > 0)
                     & np.isfinite(fixed_hz)
                     & np.isfinite(moving_hz)
-                    & (fixed_hz != 0)
-                    & (moving_hz != 0)
                 )
                 voxel_count = int(np.count_nonzero(valid))
                 if voxel_count < 100:
