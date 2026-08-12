@@ -4,7 +4,7 @@
 #SBATCH --partition=owners
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=16GB
-#SBATCH --array=0-125
+#SBATCH --array=0-8
 #SBATCH -o /oak/stanford/groups/polimeni/saskia/data/THS_2026/derivatives/coregistration/logs/cross_session_compare_%A_%a.output
 #SBATCH -e /oak/stanford/groups/polimeni/saskia/data/THS_2026/derivatives/coregistration/logs/cross_session_compare_%A_%a.error
 
@@ -37,30 +37,22 @@ PLOT_SCRIPT=$(resolve_plot_script) || {
     echo "Error: Could not locate plot_cross_session_comparison.py." >&2
     exit 1
 }
-PYTHON="/home/users/sasbo/miniconda3/bin/python3"
+PYTHON="/home/users/sasbo/miniconda3/envs/THS_env/bin/python3"
 
-SESSIONS=(
-    260529_THS_ses01
-    260601_THS_ses02
+MOVING=260601_THS_ses02
+FIXED_SESSIONS=(
     260602_THS_ses03
     260602_THS_ses04
-    260611_THS_ses05
     260618_THS_ses06
-    260618_THS_ses07
 )
 TRANSFORMS=(Rigid Affine SyN)
 
-# One task per ordered (moving, fixed) pair with moving != fixed, for each
-# transform. Self-pairs are skipped: a session registered to itself is not a
-# cross-session comparison.
+# Nine tasks: ses02 registered to ses03, ses04, and ses06 for each transform.
+# Each task renders both whole-brain and WM panels, producing 18 figures total.
 COMBOS=()
 for transform in "${TRANSFORMS[@]}"; do
-    for moving in "${SESSIONS[@]}"; do
-        for fixed in "${SESSIONS[@]}"; do
-            if [ "$moving" != "$fixed" ]; then
-                COMBOS+=("${transform} ${moving} ${fixed}")
-            fi
-        done
+    for fixed in "${FIXED_SESSIONS[@]}"; do
+        COMBOS+=("${transform} ${MOVING} ${fixed}")
     done
 done
 
@@ -73,7 +65,8 @@ fi
 read -r TRANSFORM MOVING FIXED <<< "${COMBOS[$TASK_ID]}"
 echo "Transform=${TRANSFORM} moving=${MOVING} fixed=${FIXED}"
 
-"$PYTHON" "$PLOT_SCRIPT" \
+env -u PYTHONPATH -u PYTHONHOME -u PYTHONPYCACHEPREFIX \
+    PYTHONNOUSERSITE=1 MPLBACKEND=Agg "$PYTHON" "$PLOT_SCRIPT" \
     --modality mp2rage \
     --region both \
     --moving-session "$MOVING" \

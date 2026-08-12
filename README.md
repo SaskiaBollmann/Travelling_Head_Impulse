@@ -158,8 +158,16 @@ a chosen image type ("registration id" for alignment, "correlation id" for
 the metric image, which may differ, e.g. registering on MP2RAGE but scoring
 B1). Percent difference is computed by `compute_percent_difference.py`
 (percentile-normalizes fixed/moving to [0,1], excludes near-zero reference
-voxels, and can operate on physical values instead with
-`--physical-values`); results feed `plot_image_correlation.py`.
+voxels, and can operate on physical values instead with `--physical-values`).
+MP2RAGE UNI-DEN comparisons instead use WM-mean scaling by default: the fixed
+and registered-moving images are divided by their respective means within the
+fixed session's strict FAST WM mask, making both WM means exactly 1 before
+percent difference. Existing transforms and warped images are reused when
+metrics are refreshed; results feed `plot_image_correlation.py`. Use
+`--legacy-percentile-scale` only to reproduce the former MP2RAGE analysis.
+
+`plot_cross_session_comparison.py --modality mp2rage` selects scaled results
+by default; `--legacy-percentile-scale` selects the former results.
 
 `image_correlation_fast.sh` (single Slurm job) runs rigid and/or affine ANTs
 registration (`antsRegistrationSyNQuick.sh`) for all 49 session pairs and
@@ -255,6 +263,54 @@ signed frequency difference and RMSE in Hz; percent difference is
 intentionally unavailable. The optional `plot_cross_session_comparison_array.sh`
 launcher is a 126-task Slurm array that generates every ordered (moving,
 fixed) MP2RAGE pair for all three transforms.
+
+SyN tSNR MAPD also uses physical tSNR and the fixed-image denominator. Existing
+SyN registrations can be re-summarized without registration using:
+
+```bash
+python3 compute_percent_difference.py --tsnr-batch syn-physical
+```
+
+### Rigid halfway-space tSNR comparison
+
+To avoid comparing an untouched fixed tSNR map with a more strongly smoothed,
+fully resampled moving map, split an already-computed ANTs rigid registration
+into exact forward and inverse half transforms. Both original tSNR maps are
+then linearly interpolated exactly once onto the same grid; no registration is
+recomputed. The input image paths are read from the rigid registration's
+provenance TSV.
+
+```bash
+python3 prepare_tsnr_halfway.py \
+    --moving-session 260601_THS_ses02 \
+    --fixed-session 260602_THS_ses03
+
+python3 plot_cross_session_comparison.py --modality tsnr --halfway \
+    --moving-session 260601_THS_ses02 \
+    --fixed-session 260602_THS_ses03
+```
+
+Use `--all-pairs` to prepare the full directional matrix, or `--force` to
+replace halfway resamples. The preparation script otherwise resumes existing
+outputs and detects if their source ANTs transform has changed.
+
+The rigid correlation, RMSE, and MAPD matrices are built entirely from the
+halfway outputs (all ordered session pairs, with identity values on the
+diagonal):
+
+```bash
+python3 compute_percent_difference.py --tsnr-batch rigid-halfway
+```
+
+`source_images_Rigid_...tsv` retains the original mean-EPI and tSNR paths used
+by the registrations. `halfway_matrix_Rigid_..._provenance.tsv` records the
+halfway files and saved rigid transform for every matrix cell.
+
+The percent-difference metric is relative to the fixed image:
+`100 * |moving - fixed| / |fixed|`. Every ordered matrix cell uses its own
+moving-to-fixed registration and halfway mask. Forward/reverse differences
+therefore reflect both the directional registration/mask and the intentional
+fixed-relative denominator.
 
 ## Voxel time-series and FFT spectrograms
 

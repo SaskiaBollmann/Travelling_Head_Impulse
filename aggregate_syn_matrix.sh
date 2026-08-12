@@ -30,7 +30,7 @@ PLOT_PYTHON="/home/users/sasbo/miniconda3/envs/THS_env/bin/python3"
 ORIGINAL_ARGS=("$@")
 
 print_usage() {
-    echo "Usage: ./aggregate_syn_matrix.sh -r <reg_id> [-R reg_suffix] [-c corr_id] [-C corr_suffix] [-m] [--cleanup-temp]"
+    echo "Usage: ./aggregate_syn_matrix.sh -r <reg_id> [-R reg_suffix] [-c corr_id] [-C corr_suffix] [-m] [--wm-mean-scale | --legacy-percentile-scale] [--cleanup-temp]"
     echo "Legacy: ./aggregate_syn_matrix.sh <identifier> [suffix]"
 }
 
@@ -46,6 +46,8 @@ require_value() {
 }
 
 MASK=false
+WM_MEAN_SCALE=false
+LEGACY_PERCENTILE_SCALE=false
 CLEANUP_TEMP=false
 if [[ "$#" -gt 0 && "$1" != -* ]]; then
     REG_ID="$1"
@@ -80,6 +82,14 @@ while [[ "$#" -gt 0 ]]; do
             ;;
         -m|--mask)
             MASK=true
+            shift
+            ;;
+        --wm-mean-scale)
+            WM_MEAN_SCALE=true
+            shift
+            ;;
+        --legacy-percentile-scale)
+            LEGACY_PERCENTILE_SCALE=true
             shift
             ;;
         --cleanup-temp)
@@ -129,6 +139,15 @@ dataset_id() {
 
 REG_DATASET_ID=$(dataset_id "$REG_ID" "$REG_SUFFIX")
 CORR_DATASET_ID=$(dataset_id "$CORR_ID" "$CORR_SUFFIX")
+if [ "$WM_MEAN_SCALE" = true ] && [ "$LEGACY_PERCENTILE_SCALE" = true ]; then
+    echo "Error: --wm-mean-scale and --legacy-percentile-scale are mutually exclusive." >&2
+    exit 2
+fi
+if [ "$LEGACY_PERCENTILE_SCALE" = false ] &&
+   [[ "$CORR_DATASET_ID" == *mp2rage* ]] &&
+   [[ "$CORR_DATASET_ID" == *UNI-DEN* || "$CORR_DATASET_ID" == *UNI_DEN* ]]; then
+    WM_MEAN_SCALE=true
+fi
 printf -v RUN_COMMAND '%q ' "$0" "${ORIGINAL_ARGS[@]}"
 RUN_COMMAND=${RUN_COMMAND% }
 GENERATED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")

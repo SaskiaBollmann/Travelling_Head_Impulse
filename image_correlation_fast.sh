@@ -68,12 +68,14 @@ check_programs() {
 
 # 1. Parse Command Line Arguments
 print_usage() {
-    echo "Usage: sbatch image_correlation_fast.sh (-r <reg_id> | --afni-epi ep2d [--afni-corr mean|tsnr]) [-R reg_suffix] [-c corr_id] [-C corr_suffix] [--corr-romeo standard|nd] [-m] [-t rigid|affine|both] [--physical-values] [--recompute-metrics] [-F|--force|--rerun]"
+    echo "Usage: sbatch image_correlation_fast.sh (-r <reg_id> | --afni-epi ep2d [--afni-corr mean|tsnr]) [-R reg_suffix] [-c corr_id] [-C corr_suffix] [--corr-romeo standard|nd] [-m] [-t rigid|affine|both] [--physical-values | --wm-mean-scale | --legacy-percentile-scale] [--recompute-metrics] [-F|--force|--rerun]"
 }
 
 MASK=false
 FORCE=false
 PHYSICAL_VALUES=false
+WM_MEAN_SCALE=false
+LEGACY_PERCENTILE_SCALE=false
 RECOMPUTE_METRICS=false
 TRANSFORM_MODE="both"
 ROMEO_FAMILY=""
@@ -91,6 +93,8 @@ while [[ "$#" -gt 0 ]]; do
         -m|--mask) MASK=true ;;
         -t|--transform) TRANSFORM_MODE="$2"; shift ;;
         --physical-values) PHYSICAL_VALUES=true ;;
+        --wm-mean-scale) WM_MEAN_SCALE=true ;;
+        --legacy-percentile-scale) LEGACY_PERCENTILE_SCALE=true ;;
         --recompute-metrics) RECOMPUTE_METRICS=true ;;
         -F|--force|--rerun) FORCE=true ;;
         -h|--help) print_usage; exit 0 ;;
@@ -118,6 +122,11 @@ if [ -z "$REG_ID" ]; then
     echo "Error: Registration ID (-r) is required."
     print_usage
     exit 1
+fi
+
+if [ "$PHYSICAL_VALUES" = true ] && [ "$WM_MEAN_SCALE" = true ]; then
+    echo "Error: --physical-values and --wm-mean-scale are mutually exclusive." >&2
+    exit 2
 fi
 
 if [ -n "$ROMEO_FAMILY" ]; then
@@ -157,6 +166,16 @@ dataset_id() {
 
 REG_DATASET_ID=$(dataset_id "$REG_ID" "$REG_SUFFIX")
 CORR_DATASET_ID=$(dataset_id "$CORR_ID" "$CORR_SUFFIX")
+
+if [ "$WM_MEAN_SCALE" = true ] && [ "$LEGACY_PERCENTILE_SCALE" = true ]; then
+    echo "Error: --wm-mean-scale and --legacy-percentile-scale are mutually exclusive." >&2
+    exit 2
+fi
+if [ "$LEGACY_PERCENTILE_SCALE" = false ] && [ "$PHYSICAL_VALUES" = false ] &&
+   [[ "$CORR_DATASET_ID" == *mp2rage* ]] &&
+   [[ "$CORR_DATASET_ID" == *UNI-DEN* || "$CORR_DATASET_ID" == *UNI_DEN* ]]; then
+    WM_MEAN_SCALE=true
+fi
 
 case "$TRANSFORM_MODE" in
     r|rigid|Rigid|RIGID)
@@ -218,6 +237,7 @@ AFNI_EPI_ROOT="/oak/stanford/groups/polimeni/saskia/data/THS_2026/derivatives/pr
 [ -n "$AFNI_EPI" ] && BASE_DIR="$AFNI_EPI_ROOT"
 ROMEO_ROOT="/oak/stanford/groups/polimeni/saskia/data/THS_2026/derivatives/preprocessing/b0_romeo"
 DERIV_DIR="/oak/stanford/groups/polimeni/saskia/data/THS_2026/derivatives/coregistration"
+WM_ROOT="/oak/stanford/groups/polimeni/saskia/data/THS_2026/derivatives/segmentation/fast"
 OUT_DIR="${DERIV_DIR}/${OUT_ID}"
 mkdir -p "$OUT_DIR"
 
@@ -354,6 +374,11 @@ find_afni_epi_file() {
 REG_REGEX=$(build_regex "$REG_ID" "$REG_SUFFIX")
 CORR_REGEX=$(build_regex "$CORR_ID" "$CORR_SUFFIX")
 
+if [ "$WM_MEAN_SCALE" = true ] && ! requested_mp2rage_uniden "$CORR_ID" "$CORR_SUFFIX"; then
+    echo "Error: --wm-mean-scale is only supported for MP2RAGE UNI-DEN comparisons." >&2
+    exit 2
+fi
+
 REG_FILES=()
 CORR_FILES=()
 SESSION_AVAILABLE=()
@@ -418,6 +443,7 @@ else
     echo "Resume mode: enabled. Existing pair metric files and transform outputs will be reused."
 fi
 [ "$PHYSICAL_VALUES" = true ] && echo "Percent difference: physical input values (no normalization)."
+[ "$WM_MEAN_SCALE" = true ] && echo "Percent difference: fixed and warped images scaled to WM mean 1.0."
 [ "$RECOMPUTE_METRICS" = true ] && echo "Metric refresh: enabled; existing transforms and warped images will be reused."
 
 TOTAL_PAIRS=$((NUM_SES * NUM_SES))
@@ -605,6 +631,14 @@ for (( t=0; t<${#TRANSFORM_FLAGS[@]}; t++ )); do
                 fi
                 if [ "$PHYSICAL_VALUES" = true ]; then
                     PERCENT_DIFF_ARGS+=(--physical-values)
+                fi
+                if [ "$WM_MEAN_SCALE" = true ]; then
+                    WM_SCALE_MASK="${WM_ROOT}/${FIX_SES}/wm_mask_fast_pve95.nii.gz"
+                    if [ ! -f "$WM_SCALE_MASK" ]; then
+                        echo "      Error: WM mean-scale mask not found: $WM_SCALE_MASK" >&2
+                        exit 1
+                    fi
+                    PERCENT_DIFF_ARGS+=(--mean-scale-mask "$WM_SCALE_MASK")
                 fi
                 if env -u PYTHONPATH -u PYTHONHOME "$PERCENT_DIFF_PYTHON" \
                     "$PERCENT_DIFF_SCRIPT" "${PERCENT_DIFF_ARGS[@]}"; then

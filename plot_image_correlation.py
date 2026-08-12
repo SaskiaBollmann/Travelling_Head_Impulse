@@ -256,6 +256,11 @@ def save_matrix_plot(
 
     title = metric["title"]
     transform = metric["transform"]
+    if (
+        transform == "Rigid"
+        and folder_name == "reg-ep2d_bold_mean__corr-ep2d_bold_tsnr_masked"
+    ):
+        transform = "Rigid halfway space"
     berkeley_label = "with Berkeley" if includes_berkeley else "without Berkeley"
     ax.set_title(
         f"{title}: {transform}\n({folder_name}; {berkeley_label})",

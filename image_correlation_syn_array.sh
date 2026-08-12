@@ -55,7 +55,7 @@ check_programs() {
 }
 
 print_usage() {
-    echo "Usage: sbatch image_correlation_syn_array.sh (-r <reg_id> | --afni-epi ep2d [--afni-corr mean|tsnr]) [-R reg_suffix] [-c corr_id] [-C corr_suffix] [-m] [-F|--force|--rerun]"
+    echo "Usage: sbatch image_correlation_syn_array.sh (-r <reg_id> | --afni-epi ep2d [--afni-corr mean|tsnr]) [-R reg_suffix] [-c corr_id] [-C corr_suffix] [-m] [--physical-values | --wm-mean-scale | --legacy-percentile-scale] [--recompute-metrics] [-F|--force|--rerun]"
     echo "Legacy: sbatch image_correlation_syn_array.sh <identifier> [suffix]"
 }
 
@@ -73,6 +73,10 @@ require_value() {
 # 1. Parse command line arguments. Positional arguments are kept for older calls.
 MASK=false
 FORCE=false
+PHYSICAL_VALUES=false
+WM_MEAN_SCALE=false
+LEGACY_PERCENTILE_SCALE=false
+RECOMPUTE_METRICS=false
 AFNI_EPI=""
 AFNI_CORR_METRIC="tsnr"
 if [[ "$#" -gt 0 && "$1" != -* ]]; then
@@ -120,6 +124,22 @@ while [[ "$#" -gt 0 ]]; do
             MASK=true
             shift
             ;;
+        --wm-mean-scale)
+            WM_MEAN_SCALE=true
+            shift
+            ;;
+        --physical-values)
+            PHYSICAL_VALUES=true
+            shift
+            ;;
+        --legacy-percentile-scale)
+            LEGACY_PERCENTILE_SCALE=true
+            shift
+            ;;
+        --recompute-metrics)
+            RECOMPUTE_METRICS=true
+            shift
+            ;;
         -F|--force|--rerun)
             FORCE=true
             shift
@@ -149,6 +169,9 @@ if [ -n "$AFNI_EPI" ]; then
     CORR_ID="${AFNI_EPI}_bold_${AFNI_CORR_METRIC}"
     REG_SUFFIX=""
     CORR_SUFFIX=""
+    if [ "$LEGACY_PERCENTILE_SCALE" = false ]; then
+        PHYSICAL_VALUES=true
+    fi
 fi
 
 if [ -z "$REG_ID" ]; then
@@ -182,6 +205,23 @@ dataset_id() {
 
 REG_DATASET_ID=$(dataset_id "$REG_ID" "$REG_SUFFIX")
 CORR_DATASET_ID=$(dataset_id "$CORR_ID" "$CORR_SUFFIX")
+if [ "$PHYSICAL_VALUES" = true ] && [ "$WM_MEAN_SCALE" = true ]; then
+    echo "Error: --physical-values and --wm-mean-scale are mutually exclusive." >&2
+    exit 2
+fi
+if [ "$PHYSICAL_VALUES" = true ] && [ "$LEGACY_PERCENTILE_SCALE" = true ]; then
+    echo "Error: --physical-values and --legacy-percentile-scale are mutually exclusive." >&2
+    exit 2
+fi
+if [ "$WM_MEAN_SCALE" = true ] && [ "$LEGACY_PERCENTILE_SCALE" = true ]; then
+    echo "Error: --wm-mean-scale and --legacy-percentile-scale are mutually exclusive." >&2
+    exit 2
+fi
+if [ "$LEGACY_PERCENTILE_SCALE" = false ] &&
+   [[ "$CORR_DATASET_ID" == *mp2rage* ]] &&
+   [[ "$CORR_DATASET_ID" == *UNI-DEN* || "$CORR_DATASET_ID" == *UNI_DEN* ]]; then
+    WM_MEAN_SCALE=true
+fi
 printf -v RUN_COMMAND '%q ' "$0" "${ORIGINAL_ARGS[@]}"
 RUN_COMMAND=${RUN_COMMAND% }
 GENERATED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -221,6 +261,7 @@ BASE_DIR="/oak/stanford/groups/polimeni/saskia/data/THS_2026/orig"
 AFNI_EPI_ROOT="/oak/stanford/groups/polimeni/saskia/data/THS_2026/derivatives/preprocessing/realignment_afni"
 [ -n "$AFNI_EPI" ] && BASE_DIR="$AFNI_EPI_ROOT"
 DERIV_DIR="/oak/stanford/groups/polimeni/saskia/data/THS_2026/derivatives/coregistration"
+WM_ROOT="/oak/stanford/groups/polimeni/saskia/data/THS_2026/derivatives/segmentation/fast"
 OUT_DIR="${DERIV_DIR}/${OUT_ID}"
 
 # Create the specific output directory for this scan type
@@ -347,6 +388,11 @@ find_afni_epi_file() {
 REG_REGEX=$(build_regex "$REG_ID" "$REG_SUFFIX")
 CORR_REGEX=$(build_regex "$CORR_ID" "$CORR_SUFFIX")
 
+if [ "$WM_MEAN_SCALE" = true ] && ! requested_mp2rage_uniden "$CORR_ID" "$CORR_SUFFIX"; then
+    echo "Error: --wm-mean-scale is only supported for MP2RAGE UNI-DEN comparisons." >&2
+    exit 2
+fi
+
 # 4. Map the array ID (0-48) to matrix rows (i) and columns (j).
 TASK_ID=${SLURM_ARRAY_TASK_ID:-0}
 if ! [[ "$TASK_ID" =~ ^[0-9]+$ ]]; then
@@ -400,7 +446,8 @@ printf "script\tgenerated_at\tcommand\ttransform\tmasked\tregistration_id\tregis
 PAIR_ROW=("$0" "$GENERATED_AT" "$RUN_COMMAND" "SyN" "$MASK" "$REG_ID" "${REG_SUFFIX:-}" "$CORR_ID" "${CORR_SUFFIX:-}" "$OUT_ID" "${SLURM_JOB_ID:-}" "$TASK_ID" "$MOV_SES" "$FIX_SES" "$PAIR_STATUS" "$MOVING_REG" "$FIXED_REG" "$MOVING_CORR" "$FIXED_CORR")
 printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" "${PAIR_ROW[@]}" >> "$PAIR_PROVENANCE"
 
-if [ "$FORCE" = false ] && [[ -s "$TEMP_CORR" && -s "$TEMP_RMSE" && -s "$TEMP_MAPD" && -s "$PERCENT_DIFF" ]]; then
+if [ "$FORCE" = false ] && [ "$RECOMPUTE_METRICS" = false ] &&
+   [[ -s "$TEMP_CORR" && -s "$TEMP_RMSE" && -s "$TEMP_MAPD" && -s "$PERCENT_DIFF" ]]; then
     echo "Completed SyN metrics already exist for ${MOV_SES} -> ${FIX_SES}. Skipping."
     exit 0
 fi
@@ -510,6 +557,17 @@ if [ -f "$WARPED_CORR" ]; then
     )
     if [ "$MASK" = true ]; then
         PERCENT_DIFF_ARGS+=(--mask "$MASK_FILE")
+    fi
+    if [ "$WM_MEAN_SCALE" = true ]; then
+        WM_SCALE_MASK="${WM_ROOT}/${FIX_SES}/wm_mask_fast_pve95.nii.gz"
+        if [ ! -f "$WM_SCALE_MASK" ]; then
+            echo "Error: WM mean-scale mask not found: $WM_SCALE_MASK" >&2
+            exit 1
+        fi
+        PERCENT_DIFF_ARGS+=(--mean-scale-mask "$WM_SCALE_MASK")
+    fi
+    if [ "$PHYSICAL_VALUES" = true ]; then
+        PERCENT_DIFF_ARGS+=(--physical-values)
     fi
     if env -u PYTHONPATH -u PYTHONHOME "$PERCENT_DIFF_PYTHON" \
         "$PERCENT_DIFF_SCRIPT" "${PERCENT_DIFF_ARGS[@]}"; then

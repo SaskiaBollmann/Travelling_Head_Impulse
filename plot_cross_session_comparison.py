@@ -108,6 +108,11 @@ def parse_args():
         "--transform", choices=("Rigid", "Affine", "SyN"), default="Rigid"
     )
     parser.add_argument(
+        "--halfway",
+        action="store_true",
+        help="tSNR only: plot the directional rigid-halfway comparison.",
+    )
+    parser.add_argument(
         "--region",
         choices=("whole-brain", "wm", "both"),
         default="whole-brain",
@@ -123,8 +128,25 @@ def parse_args():
         type=float,
         help="Symmetric B0 display limit in Hz (default: 600).",
     )
+    scale_group = parser.add_mutually_exclusive_group()
+    scale_group.add_argument(
+        "--wm-mean-scale",
+        dest="wm_mean_scale",
+        action="store_true",
+        help="Plot MP2RAGE results scaled to mean 1 in fixed-session WM (default).",
+    )
+    scale_group.add_argument(
+        "--legacy-percentile-scale",
+        dest="wm_mean_scale",
+        action="store_false",
+        help="MP2RAGE only: plot the former percentile-scaled results.",
+    )
+    parser.set_defaults(wm_mean_scale=None)
     parser.add_argument("--output-dir", type=Path)
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.wm_mean_scale is None:
+        args.wm_mean_scale = args.modality == "mp2rage"
+    return args
 
 
 def load_canonical(path):
@@ -238,6 +260,43 @@ def load_comparison(args):
         raise SystemExit(f"{args.modality.upper()} currently has rigid and affine results only.")
     if args.modality != "mp2rage" and args.region != "whole-brain":
         raise SystemExit("--region wm/both is currently available only for MP2RAGE.")
+    if args.halfway:
+        if args.modality != "tsnr" or args.transform != "Rigid":
+            raise SystemExit("--halfway requires --modality tsnr --transform Rigid.")
+        result_dir = TSNR_DIR
+        prefix = result_dir / "halfway" / (
+            "rigid_halfway_from_existing_"
+            f"mov_{moving_session}_to_fix_{fixed_session}"
+        )
+        fixed_path = Path(f"{prefix}_tsnr_fixed.nii.gz")
+        moving_path = Path(f"{prefix}_tsnr_moving.nii.gz")
+        mask_path = Path(f"{prefix}_brain_mask.nii.gz")
+        require_files((fixed_path, moving_path, mask_path))
+        fixed_image, fixed = load_canonical(fixed_path)
+        moving_image, moving = load_canonical(moving_path)
+        mask_image, mask_data = load_canonical(mask_path)
+        check_grids(fixed_image, fixed, (moving_image, mask_image))
+        brain_mask = (mask_data > 0) & np.isfinite(fixed) & np.isfinite(moving)
+        brain_mask &= (fixed != 0) & (moving != 0)
+        difference = np.full(fixed.shape, np.nan, dtype=np.float32)
+        difference[brain_mask] = (
+            100.0
+            * (moving[brain_mask] - fixed[brain_mask])
+            / np.abs(fixed[brain_mask])
+        )
+        return {
+            "result_dir": result_dir,
+            "output_dir": args.output_dir or result_dir / "figures",
+            "fixed": fixed,
+            "moving": moving,
+            "difference": difference,
+            "brain_mask": brain_mask,
+            "valid": brain_mask,
+            "wm_data": None,
+            "voxel_sizes": nib.affines.voxel_sizes(fixed_image.affine),
+        }
+    if args.wm_mean_scale and args.modality != "mp2rage":
+        raise SystemExit("--wm-mean-scale is available only for MP2RAGE.")
 
     if args.modality == "mp2rage":
         result_dir = MP2RAGE_DIR
@@ -325,6 +384,8 @@ def prepare_panel(args, loaded, region):
         metric_value = float(np.mean(np.abs(difference[comparison_mask])))
         metric_text = f"MAPD = {metric_value:.1f}%"
         modality_title = "Patient-specific MP2RAGE"
+        if args.wm_mean_scale:
+            modality_title += " (WM-mean scaled)"
         column_titles = (
             "Fixed MP2RAGE\n(percentile scaled)",
             "Moving MP2RAGE, registered to fixed\n(percentile scaled)",
@@ -346,6 +407,8 @@ def prepare_panel(args, loaded, region):
             fixed_panel = fixed
             moving_panel = moving
             modality_title = "EPI tSNR"
+            if args.halfway:
+                modality_title += " (rigid halfway space)"
             column_titles = (
                 "Fixed tSNR map\n(common display scale)",
                 "Moving tSNR map, registered to fixed\n(common display scale)",
@@ -483,10 +546,16 @@ def render(args, loaded, panel, region):
         f"{args.transform}_mov-{args.moving_session}_to_fix-{args.fixed_session}"
     )
     region_suffix = "wm_pve95" if region == "wm" else "whole_brain"
-    output = loaded["output_dir"] / (
-        f"cross_session_{args.modality}_{panel['filename_metric']}_"
-        f"{stem}_{region_suffix}.png"
-    )
+    if args.halfway:
+        output = loaded["output_dir"] / (
+            "tsnr_halfway_percent_difference_"
+            f"mov-{args.moving_session}_to_fix-{args.fixed_session}.png"
+        )
+    else:
+        output = loaded["output_dir"] / (
+            f"cross_session_{args.modality}_{panel['filename_metric']}_"
+            f"{stem}_{region_suffix}.png"
+        )
     output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output, dpi=300, bbox_inches="tight")
     plt.close(fig)
