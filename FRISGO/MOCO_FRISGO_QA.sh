@@ -43,7 +43,7 @@ echo $filename
 LN2_FRISGO -input moco_bold_${cnt}.nii.gz -tshift -output frisgo_bold_${cnt}.nii.gz 
 
 #Estimating tSNR for the motion corrected data with and without FRISGO.
-3dTstat -tSNR  -overwrite -prefix tSNR_frisgo_bold_${cnt}.nii.gz frisgo_bold_100_Tshift.nii.gz
+3dTstat -tSNR  -overwrite -prefix tSNR_frisgo_bold_${cnt}.nii.gz frisgo_bold_${cnt}_Tshift.nii.gz
 
 3dTstat -overwrite -mean -prefix odd_mean_moco_bold_${cnt}.nii.gz moco_bold_${cnt}.nii.gz'[4..$(2)]'\n
 3dTstat -overwrite -mean -prefix eve_mean_moco_bold_${cnt}.nii.gz moco_bold_${cnt}.nii.gz'[3..$(2)]'\n
