@@ -6,6 +6,8 @@ The shared cells contain imports and plain paths, generic image/site-plot helper
 
 ## Inputs and outputs
 
+Figure display labels use **Stanford 1** (session 02), **Stanford 2** (03), **Berkeley** (04), **Magdeburg 1** (06) and **Magdeburg 2** (07), including axes, panel headings and registration references in both notebooks. Original session IDs remain in data paths and numerical tables. Figure titles omit figure numbers. The final EPI map column is labelled “after recalibration / run 2”; the lower plot shows run 1, run 2 and run 3 with “after recalibration” centred below the group. Dates and preheating details remain in the caption and data records.
+
 The three source CSVs live beside the notebook:
 
 - `ismrm_2027_b0_b1_mp2rage_correlations.csv`
@@ -29,7 +31,7 @@ The main Figure 2 cell includes the animation; there is no separate optional pil
 
 ## Teaser notebook
 
-`ismrm_2027_teaser.ipynb` always exports `teaser_7t_impulse_traveling_head.gif` and static MP2RAGE-only `.png` / `.jpg` backups. The GIF cycles MP2RAGE → B0 → B1 → mean EPI → raw tSNR in 3-second steps (15-second infinite loop). The header uses the full abstract title, “Reproducibility of High-Performance 7T Neuroimaging Using the Impulse Head-Gradient Coil: A Traveling Head Study”, with no separate subheading. Each frame has one large image per site and a modality-specific bottom colour bar. MP2RAGE uses Rigid session 02 registrations, a common sagittal plane and the existing tighter crop (AP −85 to +96 mm, SI −89 to +73 mm). B0/B1 use Rigid session 02 registrations and transversal planes at +20 mm from its brain centroid, with shared scales ±250 Hz and 0–120% nominal. EPI/tSNR retain native transversal planes and existing validated maps; tSNR uses a shared 0–60 scale and the explicitly labelled Magdeburg October Add-on. Other Magdeburg frames use original session 06. Static backups show only the MP2RAGE frame, preserving the 3:2 aspect ratio and JPG below 1 MB. Animation captions/provenance and a five-frame contact sheet are also exported. Figure 3 titles state that all images are co-registered to Stanford session 02 and identify Rigid/SyN registration.
+`ismrm_2027_teaser.ipynb` always exports `teaser_7t_impulse_traveling_head.gif` and static MP2RAGE-only `.png` / `.jpg` backups. The GIF cycles MP2RAGE → B0 → B1 → mean EPI → raw tSNR in 3-second steps (15-second infinite loop). The header uses the full abstract title, “Reproducibility of High-Performance 7T Neuroimaging Using the Impulse Head-Gradient Coil: A Traveling Head Study”, with no separate subheading. Each frame has one large image per site and a modality-specific bottom colour bar. MP2RAGE uses Rigid session 02 registrations, a common sagittal plane and the existing tighter crop (AP −85 to +96 mm, SI −89 to +73 mm). B0/B1 use Rigid session 02 registrations and transversal planes at +20 mm from its brain centroid, with shared scales ±250 Hz and 0–120% nominal. EPI/tSNR retain native transversal planes and existing validated maps; tSNR uses a shared 0–60 scale and the explicitly labelled Magdeburg October Add-on. Other Magdeburg frames use original session 06. Static backups show only the MP2RAGE frame, preserving the 3:2 aspect ratio and JPG below 1 MB. Animation captions/provenance and a five-frame contact sheet are also exported. Figure 3 titles state that all images are co-registered to Stanford 1 and identify Rigid/SyN registration.
 
 ## Validation and history
 
