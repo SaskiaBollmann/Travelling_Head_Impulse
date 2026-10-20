@@ -18,7 +18,6 @@ import pandas as pd
 import seaborn as snb
 import statsmodels.formula.api as smf
 from scipy.stats import pearsonr
-import sys
 
 
 # =============================================================================
@@ -177,10 +176,9 @@ part = 'mag' # which part of the image are we working with
 
 # key directories
 # TODO: make them into argparse inputs
-DATADIR = sys.argv[1]
-ANALYSISDIR = sys.argv[2]
-RESDIR = sys.argv[3]
-
+RESDIR = '/home/duher/Nextcloud/SFB1436/SFB_1436_Serviceprojekt_Z02/duher/08_projects/18_TravellingHead2026/02_scripts/analysis/final_test'
+DATADIR = '/home/duher/Nextcloud/SFB1436/SFB_1436_Serviceprojekt_Z02/duher/08_projects/18_TravellingHead2026/01_data/'
+ANALYSISDIR = '/home/duher/Nextcloud/SFB1436/SFB_1436_Serviceprojekt_Z02/duher/08_projects/18_TravellingHead2026/02_scripts/analysis'
 
 # which metric are to be included
 metric_names = [
@@ -622,25 +620,27 @@ for metric_label in metric_labels:
         mgdb_vals = df_sub[df_sub['site'] == 'MGDB']['mean_val'].values
         stan_vals = df_sub[df_sub['site'] == 'STAN']['mean_val'].values
       
-        # Intra-site MGDB: Standard CV over all 3 sessions (n=3)
-        mgdb_cv = (np.std(mgdb_vals, ddof=1) / np.mean(mgdb_vals)) * 100.0
-        cv_plot_records.append({
-            'metric': metric_label,
-            'hemisphere': hemi,
-            'Comparison': 'MGDB (Intra-site)',
-            'CV_percent': mgdb_cv,
-            'is_distribution': False,
-        })
+        # Intra-site MGDB: Pairwise permutations over 3 sessions (3 pairs: C(3,2))
+        for v1, v2 in combinations(mgdb_vals, 2):
+            mgdb_cv = calc_pair_cv(v1, v2)
+            cv_plot_records.append({
+                'metric': metric_label,
+                'hemisphere': hemi,
+                'Comparison': 'MGDB (Intra-site)',
+                'CV_percent': mgdb_cv,
+                'is_distribution': True,
+            })
       
-        # Intra-site STAN: Standard CV over all 3 sessions (n=3)
-        stan_cv = (np.std(stan_vals, ddof=1) / np.mean(stan_vals)) * 100.0
-        cv_plot_records.append({
-            'metric': metric_label,
-            'hemisphere': hemi,
-            'Comparison': 'STAN (Intra-site)',
-            'CV_percent': stan_cv,
-            'is_distribution': False,
-        })
+        # Intra-site STAN: Pairwise permutations over 3 sessions (3 pairs: C(3,2))
+        for v1, v2 in combinations(stan_vals, 2):
+            stan_cv = calc_pair_cv(v1, v2)
+            cv_plot_records.append({
+                'metric': metric_label,
+                'hemisphere': hemi,
+                'Comparison': 'STAN (Intra-site)',
+                'CV_percent': stan_cv,
+                'is_distribution': True,
+            })
       
         # Inter-site: All 3 x 3 = 9 pairwise session combinations
         for v_mgdb, v_stan in product(mgdb_vals, stan_vals):
@@ -683,7 +683,7 @@ for m_idx, metric_label in enumerate(metric_labels):
     ax_curr.spines[['top', 'right']].set_visible(False)
     ax_curr.grid(axis='y', linestyle='dashed', color='lightgrey')
     ax_curr.set_axisbelow(True)
-    ax_curr.set_ylim([0.0,5.0])
+    ax_curr.set_ylim([0.0,6.0])
     
     # Annotate bar top values
     for p in barplot.patches:
@@ -733,9 +733,27 @@ mni_seg = nib.load(os.path.join(ANALYSISDIR, 'MNI152_T1_1mm_brain_seg.nii')).get
 wm_ids = [2, 7, 41, 46]
 wm_mask_mni = np.isin(mni_seg, wm_ids)
 
-fig_corr, axes_corr = plt.subplots(
-    1, len(metric_labels), figsize=(6 * len(metric_labels), 6)
-)
+# setup colorbar limits
+vmin = 0.8
+vmax = 1.0
+cmap = 'cividis'
+
+# fig_corr, axes_corr = plt.subplots(
+#     1, len(metric_labels), figsize=(6 * len(metric_labels), 6)
+# )
+
+figsize_horizontal = 35
+nrows = 1
+ncols = 5
+ratio = nrows / ncols
+fig_corr, axes = plt.subplots(nrows=1,
+                         ncols=5,
+                         figsize=(figsize_horizontal, figsize_horizontal * ratio),
+                         gridspec_kw={"width_ratios": [1, 1, 1, 1, 0.05], "wspace": 0.08},
+                         )
+
+axes_corr = axes[:4]  # first 4 axes for the heatmaps
+cbar_ax = axes[4]  # last axis for the shared colorbar
 
 for m_idx, metric_label in enumerate(metric_labels):
     ax_curr = axes_corr[m_idx]
@@ -751,44 +769,49 @@ for m_idx, metric_label in enumerate(metric_labels):
     # Reshape voxel data to 2D matrix: shape (N_wm_voxels, 6)
     voxel_matrix = mni_stack[valid_wm_voxels]
     
+    # setup session names for visualization
+    session_names = [x.split('-')[-1] for x in sessions]
+    
     # Compute 6x6 Pearson Correlation Matrix across all sessions
     corr_matrix = np.corrcoef(voxel_matrix, rowvar=False)
-    df_corr = pd.DataFrame(corr_matrix, index=sessions, columns=sessions)
+    df_corr = pd.DataFrame(corr_matrix, index=session_names, columns=session_names)
     
-    # Plot heatmap
-    if m_idx == len(metric_labels)-1:
-        snb.heatmap(
-            df_corr,
-            annot=True,
-            fmt='.3f',
-            cmap='Blues',
-            ax=ax_curr,
-            cbar_kws={'label': 'Pearson Correlation ($r$)'},
-            vmin=0.70,
-            vmax=1.0,
-        )
-    else:
-        snb.heatmap(
-            df_corr,
-            annot=True,
-            fmt='.3f',
-            cmap='Blues',
-            ax=ax_curr,
-            vmin=0.70,
-            vmax=1.0,
-        )
+    # Label visual adjustments
+    show_yticks = m_idx not in [1, 2, 3]
     
-    ax_curr.set_title(
-        f'{metric_label}', fontsize=11, fontweight='bold'
+    ax_curr = snb.heatmap(
+        df_corr,
+        annot=True,
+        annot_kws={"fontsize": 15},
+        fmt=".3f",
+        cmap=cmap,
+        square=True,
+        ax=ax_curr,
+        cbar=False,
+        cbar_kws={"label": "Pearson Correlation ($r$)"},
+        yticklabels=show_yticks,
+        vmin=vmin,
+        vmax=vmax,
     )
-    ax_curr.tick_params(axis='x', rotation=90)
-    ax_curr.tick_params(axis='y', rotation=0)
+    
+    ax_curr.set_title(f'{metric_label}', fontsize=17, fontweight='bold')
+    ax_curr.tick_params(axis='x', rotation=90, labelsize=15)
+    ax_curr.tick_params(axis='y', rotation=0, labelsize=15)
+    
+    if m_idx == len(metric_labels) - 1:
+        last_heatmap = ax_curr.collections[0]
+    
+cbar = fig_corr.colorbar(last_heatmap, cax=cbar_ax)
+cbar.set_label("Pearson Correlation ($r$)", fontsize=15)
+cbar.ax.tick_params(labelsize=15)
 
+plt.subplots_adjust(wspace=0.08, right=0.92)
 plt.tight_layout()
 plt.show()
 
 if save_figs:
-    fig_corr.savefig(os.path.join(RESDIR, 'CrossCorr_analysis_WM.png'), dpi=dpi)
+    fig_corr.savefig(os.path.join(RESDIR, 'CrossCorr_analysis_WM_300dpi.png'), dpi=300, bbox_inches="tight")
+    fig_corr.savefig(os.path.join(RESDIR, 'CrossCorr_analysis_WM_100dpi.png'), dpi=100, bbox_inches="tight")
 
 # %%
 
