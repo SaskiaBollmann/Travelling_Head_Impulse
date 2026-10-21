@@ -1,0 +1,82 @@
+# ======================================================================
+# pipeline.functions
+# ------------------
+# Utility and helper functions/wrappers repeatedly utilized during
+# the preprocessing pipeline
+#
+# This file is meant to be SOURCED using the following command:
+#   source /path/to/pipeline.functions
+# ======================================================================
+
+
+# ======================================================================
+# wrappers
+# ======================================================================
+# you can create a wrapper function for anything, especially your
+# containerized apps. That way, you don't have to rewrite the docker/apptainer
+# calls all the time. I strongly prefer apptainer (formerly singularity) due
+# to its easier implementation and generally friendlier commands, but this
+# will work with docker just fine if you wrap the command properly.
+
+# mrtrix container shortcut
+mrtrix() {
+	apptainer run --nv ${MRTRIX_CONTAINER} bash -c "$*"
+}
+
+# freesurfer container shortcut
+fs() {
+	apptainer run --nv --cleanenv -B /run -B /home/duher/Documents/FreesurferLicense/license.txt:/opt/freesurfer/license.txt:ro --env FS_LICENSE=/opt/freesurfer/license.txt \
+	-B /home/duher/Documents/Freesurfer:/opt/freesurfer/output --env SUBJECTS_DIR=/opt/freesurfer/output \
+	-B /home/duher/Documents/Freesurfer/scratch:/scratch \
+	${FREESURFER_CONTAINER} bash -c "$*"
+}
+
+# ants container shortcut
+ants() {
+	apptainer run ${ANTS_CONTAINER} bash -c "$*"
+}
+
+# dwidenoise2
+dwidenoise2() {
+	apptainer run ${DWIDENOISE2_CONTAINER} bash -c "$*"
+}
+
+synbo-disco() {
+	apptainer run -e --no-home -B /home/duher/Documents/synbo-disco/INPUTS/:/INPUTS -B /home/duher/Documents/synbo-disco/OUTPUTS/:/OUTPUTS -B /home/duher/Documents/FreesurferLicense/license.txt:/extra/freesurfer/license.txt ${SYNBODISCO_CONTAINER} --stripped
+}
+
+# ======================================================================
+# functions
+# ======================================================================
+
+getb0() {
+    # Calculates the mean b=0 image from a .mif dataset
+    # (.nii will not work)
+    # ------------------------------------------------
+
+    local input="$1"
+    local output="$2"
+    mrtrix dwiextract ${input} - -bzero -quiet | mrtrix mrmath - mean ${output} -axis 3 -quiet
+}
+
+
+get_nvols() {
+    # The stdout will be the number of volumes in a DWI dataset
+    # Input ...   /path/to/dataset.mif or .nii
+    # stdout ...  Number of volumes
+    # -----------------------------------------------
+
+    local img=$1
+    local ndim
+    ndim=$(mrtrix mrinfo "${img}" -ndim)
+
+    if [[ ${ndim} -eq 4 ]]; then
+        mrtrix mrinfo "${img}" -size -quiet | awk '{print $NF}'
+    elif [[ ${ndim} -eq 3 ]]; then
+        echo 1
+    else
+        echo "ERROR: ${img} has unexpected ndim=${ndim}" >&2
+        return 1
+    fi
+}
+
