@@ -55,7 +55,7 @@ check_programs() {
 }
 
 print_usage() {
-    echo "Usage: sbatch image_correlation_syn_array.sh (-r <reg_id> | --afni-epi ep2d [--afni-corr mean|tsnr]) [-R reg_suffix] [-c corr_id] [-C corr_suffix] [-m] [--physical-values | --wm-mean-scale | --legacy-percentile-scale] [--recompute-metrics] [-F|--force|--rerun]"
+    echo "Usage: sbatch image_correlation_syn_array.sh (-r <reg_id> | --afni-epi ep2d [--afni-corr mean|tsnr]) [-R reg_suffix] [-c corr_id] [-C corr_suffix] [-m] [--physical-values | --wm-mean-scale] [--recompute-metrics] [-F|--force|--rerun]"
     echo "Legacy: sbatch image_correlation_syn_array.sh <identifier> [suffix]"
 }
 
@@ -75,7 +75,6 @@ MASK=false
 FORCE=false
 PHYSICAL_VALUES=false
 WM_MEAN_SCALE=false
-LEGACY_PERCENTILE_SCALE=false
 RECOMPUTE_METRICS=false
 AFNI_EPI=""
 AFNI_CORR_METRIC="tsnr"
@@ -132,10 +131,6 @@ while [[ "$#" -gt 0 ]]; do
             PHYSICAL_VALUES=true
             shift
             ;;
-        --legacy-percentile-scale)
-            LEGACY_PERCENTILE_SCALE=true
-            shift
-            ;;
         --recompute-metrics)
             RECOMPUTE_METRICS=true
             shift
@@ -169,9 +164,7 @@ if [ -n "$AFNI_EPI" ]; then
     CORR_ID="${AFNI_EPI}_bold_${AFNI_CORR_METRIC}"
     REG_SUFFIX=""
     CORR_SUFFIX=""
-    if [ "$LEGACY_PERCENTILE_SCALE" = false ]; then
-        PHYSICAL_VALUES=true
-    fi
+    PHYSICAL_VALUES=true
 fi
 
 if [ -z "$REG_ID" ]; then
@@ -209,17 +202,12 @@ if [ "$PHYSICAL_VALUES" = true ] && [ "$WM_MEAN_SCALE" = true ]; then
     echo "Error: --physical-values and --wm-mean-scale are mutually exclusive." >&2
     exit 2
 fi
-if [ "$PHYSICAL_VALUES" = true ] && [ "$LEGACY_PERCENTILE_SCALE" = true ]; then
-    echo "Error: --physical-values and --legacy-percentile-scale are mutually exclusive." >&2
-    exit 2
-fi
-if [ "$WM_MEAN_SCALE" = true ] && [ "$LEGACY_PERCENTILE_SCALE" = true ]; then
-    echo "Error: --wm-mean-scale and --legacy-percentile-scale are mutually exclusive." >&2
-    exit 2
-fi
-if [ "$LEGACY_PERCENTILE_SCALE" = false ] &&
-   [[ "$CORR_DATASET_ID" == *mp2rage* ]] &&
+if [[ "$CORR_DATASET_ID" == *mp2rage* ]] &&
    [[ "$CORR_DATASET_ID" == *UNI-DEN* || "$CORR_DATASET_ID" == *UNI_DEN* ]]; then
+    if [ "$PHYSICAL_VALUES" = true ]; then
+        echo "Error: MP2RAGE UNI-DEN comparisons require WM-mean scaling." >&2
+        exit 2
+    fi
     WM_MEAN_SCALE=true
 fi
 printf -v RUN_COMMAND '%q ' "$0" "${ORIGINAL_ARGS[@]}"

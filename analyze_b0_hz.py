@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-"""Resample B0 maps into pairwise spaces and compute correlation and RMSE in Hz."""
+"""Resample B0 maps and compute correlation, RMSE in Hz, and directional MAPD."""
 
 import argparse
 import csv
@@ -25,13 +25,15 @@ SESSIONS = (
     "260618_THS_ses07",
 )
 TRANSFORMS = ("Rigid", "Affine")
+B0_MAPD_REFERENCE_FRACTION = 0.05
+B0_MAPD_REFERENCE_PERCENTILE = 99.0
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
         description=(
             "Convert previously registered ROMEO phase maps to Hz and calculate "
-            "cross-session correlation and RMSE."
+            "cross-session correlation, RMSE, and directional MAPD."
         )
     )
     parser.add_argument("--source-registration-dir", type=Path, required=True)
@@ -110,6 +112,34 @@ def apply_transform(
     )
 
 
+def b0_mapd(fixed_hz, moving_hz, valid):
+    """Return MAPD and its mask using a robust near-zero reference cutoff."""
+    fixed_magnitude = np.abs(fixed_hz[valid])
+    reference_scale = float(
+        np.percentile(fixed_magnitude, B0_MAPD_REFERENCE_PERCENTILE)
+    )
+    if not math.isfinite(reference_scale) or reference_scale <= 0:
+        raise SystemExit(f"Invalid B0 MAPD reference scale: {reference_scale}")
+
+    reference_threshold = B0_MAPD_REFERENCE_FRACTION * reference_scale
+    percent_valid = valid & (np.abs(fixed_hz) >= reference_threshold)
+    voxel_count = int(np.count_nonzero(percent_valid))
+    if voxel_count < 100:
+        raise SystemExit(
+            "Too few voxels remain after the B0 MAPD near-zero-reference "
+            f"threshold: {voxel_count}"
+        )
+
+    percent_difference = np.full(fixed_hz.shape, np.nan, dtype=np.float32)
+    percent_difference[percent_valid] = (
+        100.0
+        * (moving_hz[percent_valid] - fixed_hz[percent_valid])
+        / np.abs(fixed_hz[percent_valid])
+    )
+    mapd = float(np.mean(np.abs(percent_difference[percent_valid])))
+    return mapd, percent_difference, voxel_count, reference_scale, reference_threshold
+
+
 def main():
     args = parse_args()
     if shutil.which("antsApplyTransforms") is None:
@@ -150,6 +180,7 @@ def main():
     for transform in TRANSFORMS:
         correlation = np.full((len(SESSIONS), len(SESSIONS)), np.nan)
         rmse = np.full_like(correlation, np.nan)
+        mapd = np.full_like(correlation, np.nan)
         provenance_rows = []
 
         for moving_index, moving_session in enumerate(SESSIONS):
@@ -224,6 +255,13 @@ def main():
                 rmse[moving_index, fixed_index] = np.sqrt(
                     np.mean((moving_values - fixed_values) ** 2)
                 )
+                (
+                    mapd[moving_index, fixed_index],
+                    percent_difference,
+                    mapd_voxel_count,
+                    mapd_reference_scale,
+                    mapd_reference_threshold,
+                ) = b0_mapd(fixed_hz, moving_hz, valid)
 
                 registered = np.full(moving_hz.shape, np.nan, dtype=np.float32)
                 difference = np.full(moving_hz.shape, np.nan, dtype=np.float32)
@@ -240,6 +278,12 @@ def main():
                     fixed_image,
                     args.output_dir / f"{stem}_DIFF_HZ.nii.gz",
                     "B0 moving minus fixed (Hz)",
+                )
+                save_image(
+                    percent_difference,
+                    fixed_image,
+                    args.output_dir / f"{stem}_PERCENT_DIFF.nii.gz",
+                    "Directional B0 percent difference",
                 )
                 copy_if_different(
                     source_transform, args.output_dir / source_transform.name
@@ -259,6 +303,12 @@ def main():
                         "voxel_count": voxel_count,
                         "correlation": f"{correlation[moving_index, fixed_index]:.8f}",
                         "rmse_hz": f"{rmse[moving_index, fixed_index]:.8f}",
+                        "mapd_percent": f"{mapd[moving_index, fixed_index]:.8f}",
+                        "mapd_voxel_count": mapd_voxel_count,
+                        "mapd_reference_percentile": B0_MAPD_REFERENCE_PERCENTILE,
+                        "mapd_reference_scale_hz": f"{mapd_reference_scale:.8f}",
+                        "mapd_reference_threshold_fraction": B0_MAPD_REFERENCE_FRACTION,
+                        "mapd_reference_threshold_hz": f"{mapd_reference_threshold:.8f}",
                     }
                 )
 
@@ -267,8 +317,10 @@ def main():
             args.output_dir / f"correlation_matrix_{transform}_{prefix}.txt"
         )
         rmse_path = args.output_dir / f"rmse_hz_matrix_{transform}_{prefix}.txt"
+        mapd_path = args.output_dir / f"mapd_matrix_{transform}_{prefix}.txt"
         np.savetxt(correlation_path, correlation, fmt="%.6f")
         np.savetxt(rmse_path, rmse, fmt="%.4f")
+        np.savetxt(mapd_path, mapd, fmt="%.4f")
 
         provenance_path = args.output_dir / f"metrics_{transform}_{prefix}_provenance.tsv"
         with provenance_path.open("w", encoding="utf-8", newline="") as stream:
@@ -278,7 +330,7 @@ def main():
             writer.writeheader()
             writer.writerows(provenance_rows)
 
-        print(f"{transform}: saved correlation and RMSE-in-Hz results")
+        print(f"{transform}: saved correlation, RMSE-in-Hz, and MAPD results")
 
 
 if __name__ == "__main__":

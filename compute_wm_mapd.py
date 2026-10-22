@@ -26,6 +26,13 @@ def parse_args():
     parser.add_argument("--difference-dir", type=Path, required=True)
     parser.add_argument("--wm-root", type=Path, required=True)
     parser.add_argument("--threshold", type=float, default=0.95)
+    parser.add_argument(
+        "--transforms",
+        nargs="+",
+        choices=TRANSFORMS,
+        default=TRANSFORMS,
+        help="Transforms to summarize (default: Rigid Affine SyN).",
+    )
     return parser.parse_args()
 
 
@@ -53,7 +60,7 @@ def main():
         image, data = load_data(path)
         wm_images[session] = (path, image, data >= 0.5)
 
-    for transform in TRANSFORMS:
+    for transform in args.transforms:
         matrix = np.full((len(SESSIONS), len(SESSIONS)), np.nan)
         counts = np.zeros(matrix.shape, dtype=int)
         for i, moving in enumerate(SESSIONS):

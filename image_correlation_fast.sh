@@ -68,14 +68,13 @@ check_programs() {
 
 # 1. Parse Command Line Arguments
 print_usage() {
-    echo "Usage: sbatch image_correlation_fast.sh (-r <reg_id> | --afni-epi ep2d [--afni-corr mean|tsnr]) [-R reg_suffix] [-c corr_id] [-C corr_suffix] [--corr-romeo standard|nd] [-m] [-t rigid|affine|both] [--physical-values | --wm-mean-scale | --legacy-percentile-scale] [--recompute-metrics] [-F|--force|--rerun]"
+    echo "Usage: sbatch image_correlation_fast.sh (-r <reg_id> | --afni-epi ep2d [--afni-corr mean|tsnr]) [-R reg_suffix] [-c corr_id] [-C corr_suffix] [--corr-romeo standard|nd] [-m] [-t rigid|affine|both] [--physical-values | --wm-mean-scale] [--recompute-metrics] [-F|--force|--rerun]"
 }
 
 MASK=false
 FORCE=false
 PHYSICAL_VALUES=false
 WM_MEAN_SCALE=false
-LEGACY_PERCENTILE_SCALE=false
 RECOMPUTE_METRICS=false
 TRANSFORM_MODE="both"
 ROMEO_FAMILY=""
@@ -94,7 +93,6 @@ while [[ "$#" -gt 0 ]]; do
         -t|--transform) TRANSFORM_MODE="$2"; shift ;;
         --physical-values) PHYSICAL_VALUES=true ;;
         --wm-mean-scale) WM_MEAN_SCALE=true ;;
-        --legacy-percentile-scale) LEGACY_PERCENTILE_SCALE=true ;;
         --recompute-metrics) RECOMPUTE_METRICS=true ;;
         -F|--force|--rerun) FORCE=true ;;
         -h|--help) print_usage; exit 0 ;;
@@ -167,13 +165,12 @@ dataset_id() {
 REG_DATASET_ID=$(dataset_id "$REG_ID" "$REG_SUFFIX")
 CORR_DATASET_ID=$(dataset_id "$CORR_ID" "$CORR_SUFFIX")
 
-if [ "$WM_MEAN_SCALE" = true ] && [ "$LEGACY_PERCENTILE_SCALE" = true ]; then
-    echo "Error: --wm-mean-scale and --legacy-percentile-scale are mutually exclusive." >&2
-    exit 2
-fi
-if [ "$LEGACY_PERCENTILE_SCALE" = false ] && [ "$PHYSICAL_VALUES" = false ] &&
-   [[ "$CORR_DATASET_ID" == *mp2rage* ]] &&
+if [[ "$CORR_DATASET_ID" == *mp2rage* ]] &&
    [[ "$CORR_DATASET_ID" == *UNI-DEN* || "$CORR_DATASET_ID" == *UNI_DEN* ]]; then
+    if [ "$PHYSICAL_VALUES" = true ]; then
+        echo "Error: MP2RAGE UNI-DEN comparisons require WM-mean scaling." >&2
+        exit 2
+    fi
     WM_MEAN_SCALE=true
 fi
 

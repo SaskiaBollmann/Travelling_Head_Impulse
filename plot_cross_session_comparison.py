@@ -128,25 +128,8 @@ def parse_args():
         type=float,
         help="Symmetric B0 display limit in Hz (default: 600).",
     )
-    scale_group = parser.add_mutually_exclusive_group()
-    scale_group.add_argument(
-        "--wm-mean-scale",
-        dest="wm_mean_scale",
-        action="store_true",
-        help="Plot MP2RAGE results scaled to mean 1 in fixed-session WM (default).",
-    )
-    scale_group.add_argument(
-        "--legacy-percentile-scale",
-        dest="wm_mean_scale",
-        action="store_false",
-        help="MP2RAGE only: plot the former percentile-scaled results.",
-    )
-    parser.set_defaults(wm_mean_scale=None)
     parser.add_argument("--output-dir", type=Path)
-    args = parser.parse_args()
-    if args.wm_mean_scale is None:
-        args.wm_mean_scale = args.modality == "mp2rage"
-    return args
+    return parser.parse_args()
 
 
 def load_canonical(path):
@@ -166,14 +149,6 @@ def check_grids(reference_image, reference_data, other_images):
             reference_image.affine, image.affine
         ):
             raise SystemExit("The fixed, registered, difference, and mask grids differ.")
-
-
-def robust_normalize(data, mask):
-    values = data[mask & np.isfinite(data)]
-    low, high = np.percentile(values, (1, 99))
-    if high <= low:
-        raise SystemExit("Cannot normalize an image with an empty robust range.")
-    return np.clip((data - low) / (high - low), 0, 1)
 
 
 def best_slices(mask, voxel_sizes):
@@ -295,9 +270,6 @@ def load_comparison(args):
             "wm_data": None,
             "voxel_sizes": nib.affines.voxel_sizes(fixed_image.affine),
         }
-    if args.wm_mean_scale and args.modality != "mp2rage":
-        raise SystemExit("--wm-mean-scale is available only for MP2RAGE.")
-
     if args.modality == "mp2rage":
         result_dir = MP2RAGE_DIR
         prefix = result_dir / f"reg_{transform}_mov_{moving_session}_to_fix_{fixed_session}_"
@@ -369,9 +341,21 @@ def prepare_panel(args, loaded, region):
     contour = None
 
     if args.modality == "mp2rage":
-        fixed_panel = robust_normalize(fixed, brain_mask)
-        moving_panel = robust_normalize(moving, brain_mask)
-        image_min, image_max = 0.0, 1.0
+        wm_scale_mask = brain_mask & (loaded["wm_data"] > 0)
+        if not np.any(wm_scale_mask):
+            raise SystemExit("The common WM mean-scale mask is empty.")
+        fixed_mean = float(np.mean(fixed[wm_scale_mask]))
+        moving_mean = float(np.mean(moving[wm_scale_mask]))
+        if not np.isfinite(fixed_mean) or np.isclose(fixed_mean, 0.0):
+            raise SystemExit(f"Invalid fixed WM mean: {fixed_mean}.")
+        if not np.isfinite(moving_mean) or np.isclose(moving_mean, 0.0):
+            raise SystemExit(f"Invalid moving WM mean: {moving_mean}.")
+        fixed_panel = fixed / fixed_mean
+        moving_panel = moving / moving_mean
+        display_values = np.concatenate(
+            (fixed_panel[brain_mask], moving_panel[brain_mask])
+        )
+        image_min, image_max = float(np.min(display_values)), float(np.max(display_values))
         comparison_mask = valid
         region_label = "whole-brain"
         if region == "wm":
@@ -383,15 +367,17 @@ def prepare_panel(args, loaded, region):
         )
         metric_value = float(np.mean(np.abs(difference[comparison_mask])))
         metric_text = f"MAPD = {metric_value:.1f}%"
-        modality_title = "Patient-specific MP2RAGE"
-        if args.wm_mean_scale:
-            modality_title += " (WM-mean scaled)"
-        column_titles = (
-            "Fixed MP2RAGE\n(percentile scaled)",
-            "Moving MP2RAGE, registered to fixed\n(percentile scaled)",
-            "Percent difference\nrelative to fixed (%)",
+        modality_title = "Patient-specific MP2RAGE (WM-mean scaled)"
+        difference_formula = (
+            r"$100 \times (I_{\mathrm{moving,WM}} - I_{\mathrm{fixed,WM}}) "
+            r"/ I_{\mathrm{fixed,WM}}$"
         )
-        colorbar_label = "Percent difference relative to fixed (%)"
+        column_titles = (
+            "Fixed MP2RAGE\n(WM mean = 1)",
+            "Moving MP2RAGE, registered to fixed\n(WM mean = 1)",
+            f"Percent difference (%)\n{difference_formula}",
+        )
+        colorbar_label = difference_formula
         filename_metric = "percent_difference"
     elif args.modality in ("b1", "tsnr"):
         if args.modality == "b1":
@@ -412,7 +398,8 @@ def prepare_panel(args, loaded, region):
             column_titles = (
                 "Fixed tSNR map\n(common display scale)",
                 "Moving tSNR map, registered to fixed\n(common display scale)",
-                "Percent difference\nrelative to fixed (%)",
+                "Percent difference relative to fixed\n"
+                "100 × (moving − fixed) / |fixed|",
             )
         display_values = np.concatenate(
             (fixed_panel[brain_mask], moving_panel[brain_mask])
