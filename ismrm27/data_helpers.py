@@ -51,6 +51,32 @@ def read_correlations(path, sessions):
     return result
 
 
+def read_mapd(path, sessions):
+    """Read all directional screenshot-transcribed MAPD values before subsetting."""
+    table = pd.read_csv(path, dtype={'row_session': str, 'col_session': str})
+    expected = ['matrix', 'row_session', 'col_session', 'mapd_percent']
+    if list(table.columns) != expected:
+        raise ValueError(f'MAPD CSV requires {expected}')
+    for column in ('row_session', 'col_session'):
+        table[column] = table[column].str.removeprefix('ses').str.zfill(2)
+    names = ['B0_rigid', 'B1_rigid']
+    order = [f'{i:02d}' for i in range(1, 8)]
+    if set(table.matrix) != set(names):
+        raise ValueError('Unexpected or missing MAPD matrices')
+    result = {}
+    for name in names:
+        rows = table[table.matrix == name]
+        if len(rows) != 49 or rows.duplicated(['row_session', 'col_session']).any():
+            raise ValueError(f'{name}: require 49 unique directional cells')
+        if set(rows.row_session) != set(order) or set(rows.col_session) != set(order):
+            raise ValueError(f'{name}: expected sessions 01–07')
+        if not np.isfinite(rows.mapd_percent).all() or (rows.mapd_percent < 0).any():
+            raise ValueError(f'{name}: invalid MAPD values')
+        matrix = rows.pivot(index='row_session', columns='col_session', values='mapd_percent')
+        result[name] = matrix.loc[sessions, sessions].to_numpy()
+    return result
+
+
 def read_pose(path, sessions):
     table = pd.read_csv(path, dtype={'session':str})
     table.session = table.session.str.zfill(2)

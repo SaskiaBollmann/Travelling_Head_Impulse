@@ -1,0 +1,29 @@
+{
+  "description": "Directional rigid-registration MAPD values transcribed from user-supplied heatmap annotations.",
+  "units": "percent",
+  "precision_decimal_places": 1,
+  "sessions": [
+    "01",
+    "02",
+    "03",
+    "04",
+    "05",
+    "06",
+    "07"
+  ],
+  "row_axis": "moving session",
+  "column_axis": "fixed session",
+  "preservation": "All 98 displayed cells, including pilot sessions, asymmetric pairs and nonzero diagonals, retained verbatim.",
+  "sources": [
+    {
+      "matrix": "B0_rigid",
+      "attachment": "codex-clipboard-e8e3d8eb-d3a6-4439-808a-6fcd46047f4f.png",
+      "sha256": "2550311b07f461ad8ddfd40ecd241d2cea6a1eed335d1a87bd451eae969cf72d"
+    },
+    {
+      "matrix": "B1_rigid",
+      "attachment": "codex-clipboard-f2bc578d-7a2f-4848-945e-5455930a5d98.png",
+      "sha256": "bfd0b09c8349b417885c518e709551144a5252d2c39b7bfa23953b90e91d25c3"
+    }
+  ]
+}
