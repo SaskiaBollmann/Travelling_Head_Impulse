@@ -1,0 +1,23 @@
+   
+
+
+fsleyes render -of view.png -s ortho -vl 83 105 158 -hc -sz 2700 100 \
+  mean_moco_bold_100.nii.gz -cm greyscale -dr 0 2500 \
+  nice_activitymap.nii.gz -cm red-yellow -dr 2.47 8.48 
+
+fsleyes  -s ortho -vl 83 105 158 -hc \
+  mean_moco_bold_100.nii.gz -cm greyscale -dr 0 2500 \
+  nice_activitymap.nii.gz -cm red-yellow -dr 2.47 8.48 
+
+#sqrt2) scaled for BErkeley
+fsleyes  -s ortho -vl 83 105 158 -hc \
+  mean_moco_bold_100.nii.gz -cm greyscale -dr 0 2500 \
+  nice_activitymap.nii.gz -cm red-yellow -dr 3.5 12
+
+
+fsleyes  -s ortho -vl 83 105 158 -hc \
+  tSNR_frisgo_bold_100.nii.gz -cm hot -dr 0 40 
+
+
+fsleyes  -s ortho -vl 83 105 158 -hc \
+  diff_moco_bold_100*.nii.gz -cm greyscale -dr -1 1  
